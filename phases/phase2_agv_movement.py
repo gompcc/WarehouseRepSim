@@ -1,9 +1,9 @@
 #!/usr/bin/env python3
 """
-AGV Warehouse Simulation - Phase 1: Static Map Display (Frozen Snapshot)
-========================================================================
-Renders the warehouse layout as a static map using Pygame,
-matching the reference image. No AGV functionality.
+AGV Warehouse Simulation - Phase 2: Single AGV Movement (Frozen Snapshot)
+=========================================================================
+Renders the warehouse layout with a single AGV that can be spawned,
+directed to pick stations via A* pathfinding, and returned to spawn.
 
 Key layout facts:
   - LEFT side: ONE highway going down, stations alternate sides
@@ -17,12 +17,13 @@ Key layout facts:
     right to Pack-off → left back to Box Depot → repeat
   - Parking on the OPPOSITE side of each station.
 
-Run:  source venv/bin/activate && python3 phases/phase1_static_map.py
+Run:  source venv/bin/activate && python3 phases/phase2_agv_movement.py
 Quit: Press Q or close the window.
 """
 
 import pygame
 import sys
+import heapq
 from enum import Enum
 
 # ============================================================
@@ -67,6 +68,17 @@ BG_COLOR       = (210, 215, 222)
 OUTLINE_COLOR  = (175, 180, 188)
 LABEL_COLOR    = (35, 35, 35)
 LABEL_BG       = (255, 255, 255)
+
+# AGV constants
+TILE_TRAVEL_TIME = 1.0      # seconds per tile
+AGV_SPEED        = 1.0      # tiles per second (= 1 / TILE_TRAVEL_TIME)
+AGV_COLOR        = (255, 60, 60)
+AGV_SPAWN_TILE   = (1, 7)   # leftmost North Highway tile at spawn exit
+
+class AGVState(Enum):
+    IDLE               = "idle"
+    MOVING             = "moving"
+    RETURNING_TO_SPAWN = "returning_to_spawn"
 
 # ============================================================
 # STATION CAPACITIES
@@ -305,6 +317,246 @@ def build_map():
     return tiles
 
 # ============================================================
+# DIRECTED GRAPH BUILDER
+# ============================================================
+def build_graph(tiles):
+    """
+    Build a directed adjacency dict {(x,y): set((nx,ny))} from the tile map.
+    Encodes the anti-clockwise one-way loop for highway tiles, plus
+    bidirectional access to/from stations and parking.
+    """
+    graph = {}
+
+    # Classify every tile position
+    highway_positions = set()
+    non_highway_positions = set()
+    for pos, tile in tiles.items():
+        if tile.tile_type == TileType.HIGHWAY:
+            highway_positions.add(pos)
+        elif tile.tile_type in (TileType.PICK_STATION, TileType.PARKING,
+                                TileType.AGV_SPAWN):
+            non_highway_positions.add(pos)
+
+    all_positions = highway_positions | non_highway_positions
+
+    # Initialize empty adjacency sets
+    for pos in all_positions:
+        graph[pos] = set()
+
+    # --- Junction special cases (checked first) ---
+    junctions = {
+        (9, 7):   [(1, 0), (0, 1), (-1, 0)],  # East + South + West (return entry)
+        (9, 38):  [(1, 0)],              # East (corner)
+        (38, 38): [(0, -1)],             # North (corner)
+        (38, 8):  [(0, -1), (1, 0)],     # North + East (branch)
+        (38, 7):  [(-1, 0)],             # West (join return)
+        (57, 8):  [(0, -1)],             # North (end second lane)
+    }
+
+    # --- Segment direction rules ---
+    def get_highway_directions(x, y):
+        """Return list of (dx, dy) allowed moves for a highway tile."""
+        # Junction overrides
+        if (x, y) in junctions:
+            return junctions[(x, y)]
+
+        # North Hwy (spawn exit): row 7, cols 1-8 → East + West (return to spawn)
+        if y == 7 and 1 <= x <= 8:
+            return [(1, 0), (-1, 0)]
+
+        # North Hwy (return): row 7, cols 10-57 → West
+        if y == 7 and 10 <= x <= 57:
+            dirs = [(-1, 0)]
+            # Connector column overrides: also allow North
+            if 15 <= x <= 22:   # Box Depot connectors
+                dirs.append((0, -1))
+            if 49 <= x <= 52:   # Pack-off connectors
+                dirs.append((0, -1))
+            return dirs
+
+        # Left Highway: col 9, rows 8-38 → South
+        if x == 9 and 8 <= y <= 38:
+            return [(0, 1)]
+
+        # East Highway: row 38, cols 9-38 → East
+        if y == 38 and 9 <= x <= 38:
+            return [(1, 0)]
+
+        # Right Highway: col 38, rows 8-38 → North
+        if x == 38 and 8 <= y <= 38:
+            return [(0, -1)]
+
+        # Second lane: row 8, cols 39-57 → East
+        if y == 8 and 39 <= x <= 57:
+            return [(1, 0)]
+
+        # Connector columns (Box Depot cols 15-22, rows 5-6) → North + South
+        if 15 <= x <= 22 and 5 <= y <= 6:
+            return [(0, -1), (0, 1)]
+
+        # Connector columns (Pack-off cols 49-52, rows 5-6) → North + South
+        if 49 <= x <= 52 and 5 <= y <= 6:
+            return [(0, -1), (0, 1)]
+
+        # Default for any other highway tile: no directed movement
+        return []
+
+    # --- Build highway edges ---
+    for pos in highway_positions:
+        x, y = pos
+        for dx, dy in get_highway_directions(x, y):
+            neighbor = (x + dx, y + dy)
+            if neighbor in all_positions:
+                graph[pos].add(neighbor)
+
+    # --- Non-highway tiles: allow all 4 cardinal directions ---
+    for pos in non_highway_positions:
+        x, y = pos
+        for dx, dy in [(1, 0), (-1, 0), (0, 1), (0, -1)]:
+            neighbor = (x + dx, y + dy)
+            if neighbor in all_positions:
+                graph[pos].add(neighbor)
+
+    # --- Sidetrack edges: highway ↔ adjacent PICK_STATION, PARKING, or AGV_SPAWN ---
+    for pos in highway_positions:
+        x, y = pos
+        for dx, dy in [(1, 0), (-1, 0), (0, 1), (0, -1)]:
+            neighbor = (x + dx, y + dy)
+            if neighbor in non_highway_positions:
+                tile = tiles[neighbor]
+                if tile.tile_type in (TileType.PICK_STATION, TileType.PARKING,
+                                      TileType.AGV_SPAWN):
+                    # Bidirectional: highway → station/spawn and back
+                    graph[pos].add(neighbor)
+                    graph[neighbor].add(pos)
+
+    return graph
+
+
+# ============================================================
+# A* PATHFINDING
+# ============================================================
+def astar(graph, start, goal):
+    """
+    Standard A* with Manhattan distance heuristic and uniform edge cost = 1.
+    Returns list of (x,y) from start to goal inclusive, or None if no path.
+    """
+    if start not in graph or goal not in graph:
+        return None
+
+    def h(node):
+        return abs(node[0] - goal[0]) + abs(node[1] - goal[1])
+
+    # (f_score, counter, node)
+    counter = 0
+    open_set = [(h(start), counter, start)]
+    came_from = {}
+    g_score = {start: 0}
+
+    while open_set:
+        f, _, current = heapq.heappop(open_set)
+
+        if current == goal:
+            # Reconstruct path
+            path = [current]
+            while current in came_from:
+                current = came_from[current]
+                path.append(current)
+            path.reverse()
+            return path
+
+        for neighbor in graph.get(current, set()):
+            tentative_g = g_score[current] + 1
+            if tentative_g < g_score.get(neighbor, float('inf')):
+                came_from[neighbor] = current
+                g_score[neighbor] = tentative_g
+                counter += 1
+                heapq.heappush(open_set, (tentative_g + h(neighbor), counter, neighbor))
+
+    return None
+
+
+# ============================================================
+# AGV CLASS
+# ============================================================
+class AGV:
+    _next_id = 1
+
+    def __init__(self, pos):
+        self.agv_id = AGV._next_id
+        AGV._next_id += 1
+        self.state = AGVState.IDLE
+        self.pos = pos          # current tile (x, y)
+        self.target = None      # destination tile or None
+        self.path = []          # list of (x, y)
+        self.path_index = 0     # index of current segment start
+        self.path_progress = 0.0  # 0.0–1.0 progress between path[index] and path[index+1]
+
+    def set_destination(self, goal, graph, tiles):
+        """Plan a path to goal. Returns True if path found."""
+        route = astar(graph, self.pos, goal)
+        if route is None:
+            return False
+        self.path = route
+        self.path_index = 0
+        self.path_progress = 0.0
+        self.target = goal
+        self.state = AGVState.MOVING
+        return True
+
+    def return_to_spawn(self, graph, tiles):
+        """Plan a path back to AGV_SPAWN_TILE. Returns True if path found."""
+        route = astar(graph, self.pos, AGV_SPAWN_TILE)
+        if route is None:
+            return False
+        self.path = route
+        self.path_index = 0
+        self.path_progress = 0.0
+        self.target = AGV_SPAWN_TILE
+        self.state = AGVState.RETURNING_TO_SPAWN
+        return True
+
+    def update(self, dt):
+        """Advance along path by AGV_SPEED * dt."""
+        if self.state == AGVState.IDLE or not self.path:
+            return
+
+        self.path_progress += AGV_SPEED * dt
+
+        while self.path_progress >= 1.0 and self.path_index < len(self.path) - 1:
+            self.path_progress -= 1.0
+            self.path_index += 1
+            self.pos = self.path[self.path_index]
+
+        # Arrived at destination?
+        if self.path_index >= len(self.path) - 1:
+            self.pos = self.path[-1]
+            self.path_progress = 0.0
+            self.state = AGVState.IDLE
+            self.target = None
+            self.path = []
+            self.path_index = 0
+
+    def get_render_pos(self):
+        """Return interpolated pixel position (cx, cy) for rendering."""
+        if not self.path or self.path_index >= len(self.path) - 1:
+            # Static position
+            px = self.pos[0] * TILE_SIZE + TILE_SIZE // 2
+            py = self.pos[1] * TILE_SIZE + TILE_SIZE // 2
+            return (px, py)
+
+        # Interpolate between current and next tile
+        cx, cy = self.path[self.path_index]
+        nx, ny = self.path[self.path_index + 1]
+        t = self.path_progress
+        ix = cx + (nx - cx) * t
+        iy = cy + (ny - cy) * t
+        px = int(ix * TILE_SIZE + TILE_SIZE // 2)
+        py = int(iy * TILE_SIZE + TILE_SIZE // 2)
+        return (px, py)
+
+
+# ============================================================
 # RENDERING
 # ============================================================
 def draw_tile(surface, tile):
@@ -405,8 +657,54 @@ def draw_labels(surface, font_sm, font_md):
     label("Cart Spawn", int(3*ts), int(9.5*ts), font_sm)
 
 
-def render(screen, tiles, font_sm, font_md):
-    """Full frame render: background → tiles (layered) → labels."""
+def draw_agv(surface, agv, font):
+    """Draw an AGV: red circle with black outline and white ID, plus green path dots."""
+    # Draw remaining path as green dots
+    if agv.path and agv.state != AGVState.IDLE:
+        for i in range(agv.path_index + 1, len(agv.path)):
+            tx, ty = agv.path[i]
+            px = tx * TILE_SIZE + TILE_SIZE // 2
+            py = ty * TILE_SIZE + TILE_SIZE // 2
+            pygame.draw.circle(surface, (0, 200, 0), (px, py), 3)
+
+    # Draw AGV circle
+    cx, cy = agv.get_render_pos()
+    radius = TILE_SIZE // 2 - 2
+    pygame.draw.circle(surface, AGV_COLOR, (cx, cy), radius)
+    pygame.draw.circle(surface, (0, 0, 0), (cx, cy), radius, 2)
+
+    # Draw ID number
+    id_text = font.render(str(agv.agv_id), True, (255, 255, 255))
+    id_rect = id_text.get_rect(center=(cx, cy))
+    surface.blit(id_text, id_rect)
+
+
+def draw_ui(surface, font, agvs, selected_agv, time_scale=1.0):
+    """Draw status text in bottom-left corner."""
+    lines = []
+    lines.append(f"AGVs: {len(agvs)}  |  Speed: {time_scale}x  |  A=spawn  R=return  TAB=cycle  Up/Down=speed")
+    if selected_agv:
+        sid = selected_agv.agv_id
+        st = selected_agv.state.value
+        pos = selected_agv.pos
+        tgt = selected_agv.target
+        lines.append(f"Selected: AGV {sid}  state={st}  pos={pos}  target={tgt}")
+    else:
+        lines.append("No AGV selected")
+
+    y = WINDOW_HEIGHT - 10 - len(lines) * 18
+    for line in lines:
+        txt = font.render(line, True, (0, 0, 0))
+        bg_rect = txt.get_rect(topleft=(10, y))
+        bg_rect.inflate_ip(8, 4)
+        pygame.draw.rect(surface, (255, 255, 255, 200), bg_rect)
+        pygame.draw.rect(surface, (100, 100, 100), bg_rect, 1)
+        surface.blit(txt, (10, y))
+        y += 18
+
+
+def render(screen, tiles, font_sm, font_md, agvs=None, selected_agv=None, time_scale=1.0):
+    """Full frame render: background → tiles (layered) → labels → AGVs → UI."""
     screen.fill(BG_COLOR)
 
     # Draw tiles in layer order (bottom layers first)
@@ -431,38 +729,136 @@ def render(screen, tiles, font_sm, font_md):
 
     draw_labels(screen, font_sm, font_md)
 
+    # Draw AGVs on top
+    if agvs:
+        for agv in agvs:
+            draw_agv(screen, agv, font_md)
+        draw_ui(screen, font_sm, agvs, selected_agv, time_scale)
+
 
 # ============================================================
 # MAIN
 # ============================================================
+def verify_graph(graph, tiles):
+    """Print graph stats and test a few key paths at startup."""
+    print(f"\n--- Graph verification ---")
+    print(f"Graph nodes: {len(graph)}")
+    total_edges = sum(len(v) for v in graph.values())
+    print(f"Graph edges: {total_edges}")
+
+    # Test paths
+    tests = [
+        ("Spawn → S1 pick (8,12)", AGV_SPAWN_TILE, (8, 12)),
+        ("Spawn → S5 pick (39,35)", AGV_SPAWN_TILE, (39, 35)),
+        ("S1 pick (8,12) → Spawn (return)", (8, 12), AGV_SPAWN_TILE),
+    ]
+    for desc, start, goal in tests:
+        path = astar(graph, start, goal)
+        if path:
+            print(f"  {desc}: {len(path)} tiles, "
+                  f"~{len(path) * TILE_TRAVEL_TIME:.0f}s")
+        else:
+            print(f"  {desc}: NO PATH FOUND!")
+    print("--- End verification ---\n")
+
+
 def main():
     pygame.init()
     screen = pygame.display.set_mode((WINDOW_WIDTH, WINDOW_HEIGHT))
-    pygame.display.set_caption("AGV Warehouse Simulation  –  Phase 1: Static Map")
+    pygame.display.set_caption("AGV Warehouse Simulation  –  Phase 2: Single AGV Movement")
     clock = pygame.time.Clock()
 
     font_sm = pygame.font.SysFont("Arial", 11)
     font_md = pygame.font.SysFont("Arial", 14, bold=True)
 
     tiles = build_map()
+    graph = build_graph(tiles)
 
     print(f"Map built: {len(tiles)} tiles")
     print(f"Window:    {WINDOW_WIDTH}x{WINDOW_HEIGHT} px")
     print(f"Grid:      {GRID_COLS}x{GRID_ROWS}  ({TILE_SIZE}px tiles)")
+    print("Controls: A=spawn AGV, R=return to spawn, TAB=cycle, Click=send to station")
     print("Press Q or close window to quit.")
+
+    verify_graph(graph, tiles)
+
+    # AGV state
+    agvs = []
+    selected_agv = None
+    time_scale = 1.0        # multiplier for simulation speed
 
     running = True
     while running:
-        clock.tick(FPS)
+        dt = clock.tick(FPS) / 1000.0
 
         for event in pygame.event.get():
             if event.type == pygame.QUIT:
                 running = False
+
             elif event.type == pygame.KEYDOWN:
                 if event.key in (pygame.K_q, pygame.K_ESCAPE):
                     running = False
 
-        render(screen, tiles, font_sm, font_md)
+                elif event.key == pygame.K_UP:
+                    time_scale = min(time_scale * 2, 64.0)
+                    print(f"Speed: {time_scale}x")
+
+                elif event.key == pygame.K_DOWN:
+                    time_scale = max(time_scale / 2, 0.25)
+                    print(f"Speed: {time_scale}x")
+
+                elif event.key == pygame.K_a:
+                    # Spawn new AGV at spawn tile
+                    new_agv = AGV(AGV_SPAWN_TILE)
+                    agvs.append(new_agv)
+                    selected_agv = new_agv
+                    print(f"Spawned AGV {new_agv.agv_id} at {AGV_SPAWN_TILE}")
+
+                elif event.key == pygame.K_r:
+                    # Return selected idle AGV to spawn
+                    if selected_agv and selected_agv.state == AGVState.IDLE:
+                        if selected_agv.pos == AGV_SPAWN_TILE:
+                            print(f"AGV {selected_agv.agv_id} already at spawn")
+                        elif selected_agv.return_to_spawn(graph, tiles):
+                            print(f"AGV {selected_agv.agv_id} returning to spawn "
+                                  f"({len(selected_agv.path)} tiles)")
+                        else:
+                            print(f"AGV {selected_agv.agv_id}: no path to spawn!")
+
+                elif event.key == pygame.K_TAB:
+                    # Cycle selected AGV
+                    if agvs:
+                        if selected_agv is None:
+                            selected_agv = agvs[0]
+                        else:
+                            idx = agvs.index(selected_agv)
+                            selected_agv = agvs[(idx + 1) % len(agvs)]
+                        print(f"Selected AGV {selected_agv.agv_id}")
+
+            elif event.type == pygame.MOUSEBUTTONDOWN and event.button == 1:
+                # Left click: set destination for selected idle AGV
+                if selected_agv and selected_agv.state == AGVState.IDLE:
+                    mx, my = event.pos
+                    gx = mx // TILE_SIZE
+                    gy = my // TILE_SIZE
+                    clicked = (gx, gy)
+                    if clicked in tiles:
+                        tile = tiles[clicked]
+                        if tile.tile_type in (TileType.PICK_STATION, TileType.PARKING):
+                            if selected_agv.set_destination(clicked, graph, tiles):
+                                print(f"AGV {selected_agv.agv_id} → {clicked} "
+                                      f"({tile.tile_type.value}"
+                                      f"{' ' + tile.station_id if tile.station_id else ''}, "
+                                      f"{len(selected_agv.path)} tiles)")
+                            else:
+                                print(f"AGV {selected_agv.agv_id}: no path to {clicked}!")
+
+        # Update all AGVs
+        sim_dt = dt * time_scale
+        for agv in agvs:
+            agv.update(sim_dt)
+
+        render(screen, tiles, font_sm, font_md, agvs, selected_agv, time_scale)
         pygame.display.flip()
 
     pygame.quit()
