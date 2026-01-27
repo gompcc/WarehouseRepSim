@@ -21,6 +21,7 @@ sys.modules["pygame.font"] = _pg.font
 from agv_simulation import (
     Tile, TileType, AGV, AGVState, Cart, CartState,
     AGV_SPAWN_TILE, astar, build_map, build_graph,
+    Dispatcher, Job, JobType, Order, STATIONS,
 )
 
 
@@ -350,3 +351,106 @@ def test_highway_cost_weight():
     assert total_cost2 > total_cost, (
         f"Detour cost ({total_cost2}) should exceed highway cost ({total_cost})"
     )
+
+
+# ── Phase 6: Capacity-Based Routing Tests ────────────────────
+
+def test_get_station_fill_empty():
+    """No carts → all fill rates 0.0."""
+    tiles = build_map()
+    dispatcher = Dispatcher(tiles)
+    fill = dispatcher.get_station_fill(carts=[])
+    for station_id, (current, capacity, rate) in fill.items():
+        assert current == 0, f"{station_id}: expected current=0, got {current}"
+        assert rate == 0.0, f"{station_id}: expected rate=0.0, got {rate}"
+        assert capacity == STATIONS[station_id], f"{station_id}: wrong capacity"
+
+
+def test_get_station_fill_with_carts():
+    """Place carts at S1 pick-station tiles → correct count/rate."""
+    tiles = build_map()
+    dispatcher = Dispatcher(tiles)
+    # S1 pick-station tiles are at col 8, rows 10-14
+    s1_tiles = dispatcher._station_tiles.get(("S1", TileType.PICK_STATION), [])
+    assert len(s1_tiles) == 5, f"Expected 5 S1 pick tiles, got {len(s1_tiles)}"
+    # Place 3 carts at the first 3 S1 tiles
+    carts = []
+    for i in range(3):
+        c = Cart(s1_tiles[i])
+        c.state = CartState.PICKING
+        c.carried_by = None
+        carts.append(c)
+    fill = dispatcher.get_station_fill(carts)
+    current, capacity, rate = fill["S1"]
+    assert current == 3, f"Expected 3 carts at S1, got {current}"
+    assert capacity == 5
+    assert abs(rate - 3 / 5) < 0.01
+
+
+def test_pick_best_station_prefers_emptier():
+    """S1 at 60% vs S3 at 0% → picks S3."""
+    tiles = build_map()
+    dispatcher = Dispatcher(tiles)
+    # Fill S1 to 3/5 = 60%
+    s1_tiles = dispatcher._station_tiles.get(("S1", TileType.PICK_STATION), [])
+    carts = []
+    for i in range(3):
+        c = Cart(s1_tiles[i])
+        c.state = CartState.PICKING
+        c.carried_by = None
+        carts.append(c)
+    # Cart at a neutral position
+    cart_pos = (9, 20)
+    result = dispatcher._pick_best_station([1, 3], cart_pos, carts)
+    # S3 is at 0% (priority 1), S1 is at 60% (priority 2) → picks S3
+    assert result == 3, f"Expected station 3, got {result}"
+
+
+def test_pick_best_station_distance_tiebreak():
+    """Both stations empty → picks the closer one."""
+    tiles = build_map()
+    dispatcher = Dispatcher(tiles)
+    carts = []  # no carts → all stations empty (priority 1)
+    # S1 pick tiles start at (8, 10), S3 pick tiles start at (8, 23)
+    # Cart at (8, 11) is closer to S1
+    cart_pos = (8, 11)
+    result = dispatcher._pick_best_station([1, 3], cart_pos, carts)
+    assert result == 1, f"Expected station 1 (closer), got {result}"
+
+
+def test_pick_best_station_skips_full():
+    """S1 full → picks S3."""
+    tiles = build_map()
+    dispatcher = Dispatcher(tiles)
+    # Fill all 5 S1 pick tiles
+    s1_tiles = dispatcher._station_tiles.get(("S1", TileType.PICK_STATION), [])
+    carts = []
+    for i in range(5):
+        c = Cart(s1_tiles[i])
+        c.state = CartState.PICKING
+        c.carried_by = None
+        carts.append(c)
+    cart_pos = (8, 11)  # close to S1
+    result = dispatcher._pick_best_station([1, 3], cart_pos, carts)
+    assert result == 3, f"Expected station 3 (S1 full), got {result}"
+
+
+def test_nearest_agv_assignment():
+    """AGV closer to cart gets the job."""
+    tiles = build_map()
+    graph = build_graph(tiles)
+    dispatcher = Dispatcher(tiles)
+    # Spawn a cart at cart spawn
+    cart = Cart((0, 7))
+    cart.state = CartState.SPAWNED
+    carts = [cart]
+    # Two AGVs: agv_far at (5, 0), agv_near at (1, 7) — near is closer
+    agv_far = AGV((5, 0))
+    agv_near = AGV((1, 7))
+    agvs = [agv_far, agv_near]
+    # Run dispatcher to create and assign jobs
+    dispatcher.update(carts, agvs, graph, tiles)
+    # The nearest AGV (agv_near) should get the job
+    assert agv_near.current_job is not None, "Nearest AGV should be assigned the job"
+    assert agv_near.current_job.cart is cart, "Job should be for our cart"
+    assert agv_far.current_job is None, "Far AGV should not have a job"

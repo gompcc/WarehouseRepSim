@@ -231,6 +231,7 @@ class Dispatcher:
         self.pending_jobs = []
         self.active_jobs = []
         self.completed_orders = 0
+        self._station_fill_cache = {}
 
     def _reserved_tiles(self, carts):
         """Return set of tiles occupied by stationary carts or targeted by jobs."""
@@ -243,6 +244,35 @@ class Dispatcher:
         for job in self.active_jobs:
             reserved.add(job.target_pos)
         return reserved
+
+    def get_station_fill(self, carts):
+        """Return { station_id: (current, capacity, fill_rate) } for all stations."""
+        reserved = self._reserved_tiles(carts)
+        fill = {}
+        for station_id, capacity in STATIONS.items():
+            key = (station_id, TileType.PICK_STATION) if station_id.startswith("S") else (station_id, TileType.PARKING)
+            positions = self._station_tiles.get(key, [])
+            current = sum(1 for pos in positions if pos in reserved)
+            fill[station_id] = (current, capacity, current / capacity if capacity > 0 else 0.0)
+        return fill
+
+    def _pick_best_station(self, remaining_stations, cart_pos, carts):
+        """Pick the least-busy station from remaining_stations using fill rate tiers + distance."""
+        fill = self.get_station_fill(carts)
+        candidates = []
+        for s in remaining_stations:
+            sid = f"S{s}"
+            current, capacity, rate = fill.get(sid, (0, 0, 1.0))
+            if current >= capacity:
+                continue
+            priority = 1 if rate <= 0.50 else (2 if rate <= 0.75 else 3)
+            station_tiles = self._station_tiles.get((sid, TileType.PICK_STATION), [])
+            dist = abs(cart_pos[0] - station_tiles[0][0]) + abs(cart_pos[1] - station_tiles[0][1]) if station_tiles else float('inf')
+            candidates.append((priority, dist, s))
+        if not candidates:
+            return None
+        candidates.sort()
+        return candidates[0][2]
 
     def _find_tile(self, station_id, tile_type, carts=None):
         """Return an unoccupied tile for station_id + tile_type, or None if full."""
@@ -268,8 +298,8 @@ class Dispatcher:
                 return True
         return False
 
-    def _create_jobs(self, carts):
-        """Check carts and create jobs as needed."""
+    def _create_jobs(self, carts, graph, tiles):
+        """Check carts and create jobs as needed (capacity-based station routing)."""
         for cart in carts:
             if self._has_job(cart):
                 continue
@@ -287,7 +317,11 @@ class Dispatcher:
                     print(f"[Order #{cart.order.order_id}] Cart C{cart.cart_id}: "
                           f"picks={cart.order.picks}, "
                           f"stations={['S'+str(s) for s in cart.order.stations_to_visit]}")
-                ns = cart.order.next_station()
+                remaining = [s for s in cart.order.stations_to_visit
+                             if s not in cart.order.completed_stations]
+                ns = self._pick_best_station(remaining, cart.pos, carts)
+                if ns is None:
+                    ns = cart.order.next_station()
                 if ns is not None:
                     sid = f"S{ns}"
                     target = self._find_tile(sid, TileType.PICK_STATION, carts)
@@ -297,7 +331,11 @@ class Dispatcher:
 
             elif cart.state == CartState.PICKING and cart.process_timer <= 0:
                 if cart.order:
-                    ns = cart.order.next_station()
+                    remaining = [s for s in cart.order.stations_to_visit
+                                 if s not in cart.order.completed_stations]
+                    ns = self._pick_best_station(remaining, cart.pos, carts)
+                    if ns is None:
+                        ns = cart.order.next_station()
                     if ns is not None:
                         sid = f"S{ns}"
                         target = self._find_tile(sid, TileType.PICK_STATION, carts)
@@ -332,15 +370,16 @@ class Dispatcher:
         for job in self.pending_jobs:
             if not free_agvs:
                 break
-            agv = free_agvs[0]
-            if agv.pickup_cart(job.cart, graph, tiles):
-                job.assigned_agv = agv
-                agv.current_job = job
+            best_agv = min(free_agvs, key=lambda a: abs(a.pos[0] - job.cart.pos[0]) + abs(a.pos[1] - job.cart.pos[1]))
+            dist = abs(best_agv.pos[0] - job.cart.pos[0]) + abs(best_agv.pos[1] - job.cart.pos[1])
+            if best_agv.pickup_cart(job.cart, graph, tiles):
+                job.assigned_agv = best_agv
+                best_agv.current_job = job
                 self.active_jobs.append(job)
                 assigned.append(job)
-                free_agvs.pop(0)
-                print(f"[Dispatcher] AGV {agv.agv_id} assigned Job #{job.job_id} "
-                      f"({job.job_type.value}) → pickup C{job.cart.cart_id}")
+                free_agvs.remove(best_agv)
+                print(f"[Dispatcher] AGV {best_agv.agv_id} assigned Job #{job.job_id} "
+                      f"({job.job_type.value}) → pickup C{job.cart.cart_id} dist={dist}")
         for job in assigned:
             self.pending_jobs.remove(job)
 
@@ -471,9 +510,14 @@ class Dispatcher:
                 agv.blocked_timer = 0.0
                 agv.last_reroute = 0.0
 
+    def get_station_tile_positions(self, station_id):
+        """Return list of PICK_STATION tile positions for a given station."""
+        return self._station_tiles.get((station_id, TileType.PICK_STATION), [])
+
     def update(self, carts, agvs, graph, tiles):
         """Main dispatcher tick — called each frame after AGV updates."""
-        self._create_jobs(carts)
+        self._station_fill_cache = self.get_station_fill(carts)
+        self._create_jobs(carts, graph, tiles)
         self._assign_jobs(agvs, graph, tiles)
         self._progress_jobs(graph, tiles)
         self._handle_blocked_agvs(agvs, graph, tiles)
@@ -1114,8 +1158,8 @@ def draw_tile(surface, tile):
         pygame.draw.rect(surface, color, rect)
 
 
-def draw_labels(surface, font_sm, font_md):
-    """Draw station names, section labels, and capacity placeholders."""
+def draw_labels(surface, font_sm, font_md, station_fill=None):
+    """Draw station names, section labels, and live capacity indicators."""
 
     def label(text, cx, cy, font=None, bg=True):
         """Render centred text at pixel position (cx, cy)."""
@@ -1129,46 +1173,69 @@ def draw_labels(surface, font_sm, font_md):
             pygame.draw.rect(surface, OUTLINE_COLOR, bgr, 1)
         surface.blit(txt, r)
 
+    def capacity_label(station_id, cx, cy):
+        """Render a color-coded capacity label from live station_fill data."""
+        if station_fill and station_id in station_fill:
+            current, capacity, rate = station_fill[station_id]
+        else:
+            capacity = STATIONS.get(station_id, 0)
+            current, rate = 0, 0.0
+        text = f"{current}/{capacity}"
+        if rate <= 0.50:
+            color = (30, 140, 30)     # green
+        elif rate <= 0.75:
+            color = (200, 160, 0)     # amber/yellow
+        else:
+            color = (200, 40, 40)     # red
+        f = font_sm
+        txt = f.render(text, True, color)
+        r = txt.get_rect(center=(cx, cy))
+        pad = 3
+        bgr = r.inflate(pad * 2, pad * 2)
+        pygame.draw.rect(surface, LABEL_BG, bgr)
+        pygame.draw.rect(surface, OUTLINE_COLOR, bgr, 1)
+        surface.blit(txt, r)
+
     ts = TILE_SIZE
 
     # --- Left-side station labels ---
     # S1: racking cols 4-7, rows 10-14 → centre ≈ (5.5, 12)
     label("S1",   int(5.5*ts+ts/2),  12*ts+ts//2, font_md)
-    label("0/5",  int(5.5*ts+ts/2),  13*ts+ts//2)
+    capacity_label("S1",  int(5.5*ts+ts/2),  13*ts+ts//2)
     # S2: racking cols 11-16, rows 17-20 → centre ≈ (13.5, 18.5)
     label("S2",   int(13.5*ts+ts/2), int(18*ts+ts/2), font_md)
-    label("0/4",  int(13.5*ts+ts/2), int(19*ts+ts/2))
+    capacity_label("S2",  int(13.5*ts+ts/2), int(19*ts+ts/2))
     # S3: racking cols 4-7, rows 23-26
     label("S3",   int(5.5*ts+ts/2),  int(24*ts+ts/2), font_md)
-    label("0/4",  int(5.5*ts+ts/2),  int(25*ts+ts/2))
+    capacity_label("S3",  int(5.5*ts+ts/2),  int(25*ts+ts/2))
     # S4: racking cols 11-16, rows 29-32
     label("S4",   int(13.5*ts+ts/2), int(30*ts+ts/2), font_md)
-    label("0/4",  int(13.5*ts+ts/2), int(31*ts+ts/2))
+    capacity_label("S4",  int(13.5*ts+ts/2), int(31*ts+ts/2))
 
     # --- Right-side station labels ---
     # S5: racking cols 40-44, rows 34-36
     label("S5",   42*ts+ts//2, 35*ts+ts//2, font_md)
-    label("0/3",  42*ts+ts//2, 36*ts+ts//2)
+    capacity_label("S5",  42*ts+ts//2, 36*ts+ts//2)
     # S6: racking cols 32-36, rows 28-31
     label("S6",   34*ts+ts//2, 29*ts+ts//2, font_md)
-    label("0/4",  34*ts+ts//2, 30*ts+ts//2)
+    capacity_label("S6",  34*ts+ts//2, 30*ts+ts//2)
     # S7: racking cols 40-44, rows 22-25
     label("S7",   42*ts+ts//2, 23*ts+ts//2, font_md)
-    label("0/4",  42*ts+ts//2, 24*ts+ts//2)
+    capacity_label("S7",  42*ts+ts//2, 24*ts+ts//2)
     # S8: racking cols 32-36, rows 16-19
     label("S8",   34*ts+ts//2, 17*ts+ts//2, font_md)
-    label("0/4",  34*ts+ts//2, 18*ts+ts//2)
+    capacity_label("S8",  34*ts+ts//2, 18*ts+ts//2)
     # S9: racking cols 40-44, rows 10-13  (RIGHT/outer, same as S5, S7)
     label("S9",   42*ts+ts//2, 11*ts+ts//2, font_md)
-    label("0/4",  42*ts+ts//2, 12*ts+ts//2)
+    capacity_label("S9",  42*ts+ts//2, 12*ts+ts//2)
 
     # --- Box Depot ---
     label("Box Depot", 19*ts+ts//2, int(2.5*ts), font_md)
-    label("0/8",       19*ts+ts//2, int(3.5*ts))
+    capacity_label("Box_Depot", 19*ts+ts//2, int(3.5*ts))
 
     # --- Pack-off ---
     label("Packoff Conveyor", int(50.5*ts), int(1.5*ts), font_md)
-    label("0/4",               int(50.5*ts), int(2.5*ts))
+    capacity_label("Pack_off", int(50.5*ts), int(2.5*ts))
 
     # --- Section labels (no background box) ---
     label("South Pallets",  5*ts,  36*ts, font_sm, bg=False)
@@ -1303,7 +1370,24 @@ def render(screen, tiles, font_sm, font_md, agvs=None, selected_agv=None,
         for tile in by_type[tt]:
             draw_tile(screen, tile)
 
-    draw_labels(screen, font_sm, font_md)
+    # Station tile color overlay based on fill rate
+    station_fill = dispatcher._station_fill_cache if dispatcher else None
+    if station_fill and dispatcher:
+        overlay = pygame.Surface((TILE_SIZE, TILE_SIZE), pygame.SRCALPHA)
+        for station_id, (current, capacity, rate) in station_fill.items():
+            if not station_id.startswith("S"):
+                continue
+            if rate <= 0.50:
+                ov_color = (30, 200, 30, 40)      # green tint
+            elif rate <= 0.75:
+                ov_color = (230, 200, 0, 50)       # yellow tint
+            else:
+                ov_color = (220, 50, 50, 60)        # red tint
+            for pos in dispatcher.get_station_tile_positions(station_id):
+                overlay.fill(ov_color)
+                screen.blit(overlay, (pos[0] * TILE_SIZE, pos[1] * TILE_SIZE))
+
+    draw_labels(screen, font_sm, font_md, station_fill=station_fill)
 
     # Draw stationary carts (before AGVs so AGVs render on top)
     if carts:
