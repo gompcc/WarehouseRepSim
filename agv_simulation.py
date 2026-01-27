@@ -25,6 +25,7 @@ Quit: Press Q or close the window.
 import pygame
 import sys
 import heapq
+import random
 from enum import Enum
 
 # ============================================================
@@ -84,6 +85,15 @@ CART_COLOR_SPAWNED    = (255, 255, 255)  # white
 CART_COLOR_IN_TRANSIT = (60, 200, 60)    # green
 CART_COLOR_IDLE       = (80, 140, 255)   # blue
 
+BOX_DEPOT_TIME     = 45.0   # seconds processing at box depot
+PICK_TIME_PER_ITEM = 30.0   # seconds per item at pick station
+PACKOFF_TIME       = 60.0   # seconds processing at pack-off
+CART_COLOR_PROCESSING = (255, 165, 0)   # orange
+CART_COLOR_COMPLETED  = (200, 50, 50)   # red
+
+BLOCK_TIMEOUT    = 3.0   # seconds blocked before attempting re-route
+REROUTE_COOLDOWN = 2.0   # min gap between re-route attempts
+
 class AGVState(Enum):
     IDLE               = "idle"
     MOVING             = "moving"
@@ -115,14 +125,68 @@ class Cart:
         self.pos = pos              # current tile (x, y)
         self.state = CartState.SPAWNED
         self.carried_by = None      # AGV instance or None
+        self.order = None           # Order instance or None
+        self.process_timer = 0.0    # countdown for station processing
+
+    def update(self, dt):
+        """Decrement process_timer when at a processing station."""
+        if self.state in (CartState.AT_BOX_DEPOT, CartState.PICKING, CartState.AT_PACKOFF):
+            if self.process_timer > 0:
+                self.process_timer -= dt
+                if self.process_timer < 0:
+                    self.process_timer = 0.0
 
     def get_color(self):
         if self.state == CartState.SPAWNED:
             return CART_COLOR_SPAWNED
-        elif self.state == CartState.IN_TRANSIT:
+        elif self.state in (CartState.TO_BOX_DEPOT, CartState.IN_TRANSIT_TO_PICK,
+                            CartState.IN_TRANSIT_TO_PACKOFF, CartState.IN_TRANSIT):
             return CART_COLOR_IN_TRANSIT
+        elif self.state in (CartState.AT_BOX_DEPOT, CartState.PICKING, CartState.AT_PACKOFF):
+            return CART_COLOR_PROCESSING
+        elif self.state == CartState.COMPLETED:
+            return CART_COLOR_COMPLETED
         else:
             return CART_COLOR_IDLE
+
+class Order:
+    _next_id = 1
+    def __init__(self):
+        self.order_id = Order._next_id; Order._next_id += 1
+        length = random.randint(1, 9)
+        self.picks = [random.randint(1, 9) for _ in range(length)]
+        self.stations_to_visit = sorted(set(self.picks))
+        self.completed_stations = []
+    def items_at_station(self, station_num):
+        return self.picks.count(station_num)
+    def next_station(self):
+        for s in self.stations_to_visit:
+            if s not in self.completed_stations:
+                return s
+        return None
+    def complete_station(self, station_num):
+        self.completed_stations.append(station_num)
+    def all_picked(self):
+        return len(self.completed_stations) == len(self.stations_to_visit)
+
+
+class JobType(Enum):
+    PICKUP_TO_BOX_DEPOT = "pickup_to_box_depot"
+    MOVE_TO_PICK        = "move_to_pick"
+    MOVE_TO_PACKOFF     = "move_to_packoff"
+    RETURN_TO_BOX_DEPOT = "return_to_box_depot"
+
+
+class Job:
+    _next_id = 1
+    def __init__(self, job_type, cart, target_pos, station_id=None):
+        self.job_id = Job._next_id; Job._next_id += 1
+        self.job_type = job_type
+        self.cart = cart
+        self.target_pos = target_pos
+        self.station_id = station_id   # "S3" for pick jobs
+        self.assigned_agv = None
+
 
 # ============================================================
 # STATION CAPACITIES
@@ -152,6 +216,268 @@ LEFT_HWY_COL   = 9     # single highway down the left section
 RIGHT_HWY_COL  = 38    # single highway up the right section
 NORTH_HWY_ROW  = 7     # horizontal highway across the top
 EAST_HWY_ROW   = 38    # horizontal highway across the bottom
+
+# ============================================================
+# DISPATCHER  –  orchestrates autonomous cart lifecycle
+# ============================================================
+class Dispatcher:
+    def __init__(self, tiles):
+        # Pre-compute station tile positions for quick lookup
+        self._station_tiles = {}  # { (station_id, tile_type): [(x,y), ...] }
+        for (x, y), tile in tiles.items():
+            key = (tile.station_id, tile.tile_type)
+            if tile.station_id:
+                self._station_tiles.setdefault(key, []).append((x, y))
+        self.pending_jobs = []
+        self.active_jobs = []
+        self.completed_orders = 0
+
+    def _reserved_tiles(self, carts):
+        """Return set of tiles occupied by stationary carts or targeted by jobs."""
+        reserved = set()
+        for c in carts:
+            if c.carried_by is None:
+                reserved.add(c.pos)
+        for job in self.pending_jobs:
+            reserved.add(job.target_pos)
+        for job in self.active_jobs:
+            reserved.add(job.target_pos)
+        return reserved
+
+    def _find_tile(self, station_id, tile_type, carts=None):
+        """Return an unoccupied tile for station_id + tile_type, or None if full."""
+        key = (station_id, tile_type)
+        positions = self._station_tiles.get(key, [])
+        if not positions:
+            return None
+        if carts is not None:
+            reserved = self._reserved_tiles(carts)
+            for pos in positions:
+                if pos not in reserved:
+                    return pos
+            return None  # station full — cart must wait
+        return positions[0]
+
+    def _has_job(self, cart):
+        """Check if cart already has a pending or active job."""
+        for job in self.pending_jobs:
+            if job.cart is cart:
+                return True
+        for job in self.active_jobs:
+            if job.cart is cart:
+                return True
+        return False
+
+    def _create_jobs(self, carts):
+        """Check carts and create jobs as needed."""
+        for cart in carts:
+            if self._has_job(cart):
+                continue
+
+            if cart.state == CartState.SPAWNED and cart.carried_by is None:
+                target = self._find_tile("Box_Depot", TileType.PARKING, carts)
+                if target:
+                    job = Job(JobType.PICKUP_TO_BOX_DEPOT, cart, target)
+                    self.pending_jobs.append(job)
+
+            elif cart.state == CartState.AT_BOX_DEPOT and cart.process_timer <= 0:
+                # Generate order if cart has none
+                if cart.order is None:
+                    cart.order = Order()
+                    print(f"[Order #{cart.order.order_id}] Cart C{cart.cart_id}: "
+                          f"picks={cart.order.picks}, "
+                          f"stations={['S'+str(s) for s in cart.order.stations_to_visit]}")
+                ns = cart.order.next_station()
+                if ns is not None:
+                    sid = f"S{ns}"
+                    target = self._find_tile(sid, TileType.PICK_STATION, carts)
+                    if target:
+                        job = Job(JobType.MOVE_TO_PICK, cart, target, station_id=sid)
+                        self.pending_jobs.append(job)
+
+            elif cart.state == CartState.PICKING and cart.process_timer <= 0:
+                if cart.order:
+                    ns = cart.order.next_station()
+                    if ns is not None:
+                        sid = f"S{ns}"
+                        target = self._find_tile(sid, TileType.PICK_STATION, carts)
+                        if target:
+                            job = Job(JobType.MOVE_TO_PICK, cart, target, station_id=sid)
+                            self.pending_jobs.append(job)
+                    elif cart.order.all_picked():
+                        target = self._find_tile("Pack_off", TileType.PARKING, carts)
+                        if target:
+                            job = Job(JobType.MOVE_TO_PACKOFF, cart, target)
+                            self.pending_jobs.append(job)
+
+            elif cart.state == CartState.AT_PACKOFF and cart.process_timer <= 0:
+                target = self._find_tile("Box_Depot", TileType.PARKING, carts)
+                if target:
+                    job = Job(JobType.RETURN_TO_BOX_DEPOT, cart, target)
+                    self.pending_jobs.append(job)
+
+            elif cart.state == CartState.COMPLETED and cart.carried_by is None:
+                target = self._find_tile("Box_Depot", TileType.PARKING, carts)
+                if target:
+                    job = Job(JobType.RETURN_TO_BOX_DEPOT, cart, target)
+                    self.pending_jobs.append(job)
+
+    def _assign_jobs(self, agvs, graph, tiles):
+        """Assign pending jobs to free AGVs."""
+        free_agvs = [a for a in agvs
+                     if a.state == AGVState.IDLE
+                     and a.current_job is None
+                     and a.carrying_cart is None]
+        assigned = []
+        for job in self.pending_jobs:
+            if not free_agvs:
+                break
+            agv = free_agvs[0]
+            if agv.pickup_cart(job.cart, graph, tiles):
+                job.assigned_agv = agv
+                agv.current_job = job
+                self.active_jobs.append(job)
+                assigned.append(job)
+                free_agvs.pop(0)
+                print(f"[Dispatcher] AGV {agv.agv_id} assigned Job #{job.job_id} "
+                      f"({job.job_type.value}) → pickup C{job.cart.cart_id}")
+        for job in assigned:
+            self.pending_jobs.remove(job)
+
+    def _set_transit_state(self, job):
+        """Set the cart's transit state based on job type."""
+        mapping = {
+            JobType.PICKUP_TO_BOX_DEPOT: CartState.TO_BOX_DEPOT,
+            JobType.MOVE_TO_PICK:        CartState.IN_TRANSIT_TO_PICK,
+            JobType.MOVE_TO_PACKOFF:     CartState.IN_TRANSIT_TO_PACKOFF,
+            JobType.RETURN_TO_BOX_DEPOT: CartState.TO_BOX_DEPOT,
+        }
+        job.cart.state = mapping.get(job.job_type, CartState.IN_TRANSIT)
+
+    def _complete_job(self, job):
+        """Handle job completion after dropoff finishes."""
+        cart = job.cart
+        agv = job.assigned_agv
+
+        if job.job_type == JobType.PICKUP_TO_BOX_DEPOT:
+            cart.state = CartState.AT_BOX_DEPOT
+            cart.process_timer = BOX_DEPOT_TIME
+            print(f"[Dispatcher] C{cart.cart_id} arrived at Box Depot — processing {BOX_DEPOT_TIME}s")
+
+        elif job.job_type == JobType.MOVE_TO_PICK:
+            station_num = int(job.station_id[1:])
+            items = cart.order.items_at_station(station_num) if cart.order else 1
+            cart.state = CartState.PICKING
+            cart.process_timer = PICK_TIME_PER_ITEM * items
+            if cart.order:
+                cart.order.complete_station(station_num)
+            print(f"[Dispatcher] C{cart.cart_id} at {job.station_id} — "
+                  f"picking {items} items ({cart.process_timer}s)")
+
+        elif job.job_type == JobType.MOVE_TO_PACKOFF:
+            cart.state = CartState.AT_PACKOFF
+            cart.process_timer = PACKOFF_TIME
+            print(f"[Dispatcher] C{cart.cart_id} at Pack-off — processing {PACKOFF_TIME}s")
+
+        elif job.job_type == JobType.RETURN_TO_BOX_DEPOT:
+            cart.state = CartState.AT_BOX_DEPOT
+            cart.process_timer = BOX_DEPOT_TIME
+            cart.order = None
+            self.completed_orders += 1
+            print(f"[Dispatcher] C{cart.cart_id} returned to Box Depot — "
+                  f"completed orders: {self.completed_orders}")
+
+        # Clear job from AGV
+        if agv:
+            agv.current_job = None
+        if job in self.active_jobs:
+            self.active_jobs.remove(job)
+
+    def _progress_jobs(self, graph, tiles):
+        """Monitor active jobs and advance them through phases."""
+        for job in list(self.active_jobs):
+            agv = job.assigned_agv
+            if agv is None:
+                continue
+
+            # Phase 1: AGV finished pickup (now IDLE and carrying cart)
+            #          → set transit state + start dropoff to target
+            if (agv.state == AGVState.IDLE
+                    and agv.carrying_cart is not None
+                    and agv.carrying_cart is job.cart):
+                # Cart just picked up — set transit state and send to target
+                self._set_transit_state(job)
+                if agv.start_dropoff(job.target_pos, graph, tiles):
+                    print(f"[Dispatcher] AGV {agv.agv_id} carrying C{job.cart.cart_id} "
+                          f"→ {job.target_pos} ({len(agv.path)} tiles)")
+                else:
+                    print(f"[Dispatcher] AGV {agv.agv_id}: no path to {job.target_pos}!")
+
+            # Phase 2: AGV finished dropoff (now IDLE, no cart)
+            #          → complete the job (set station state + timer)
+            elif (agv.state == AGVState.IDLE
+                    and agv.carrying_cart is None
+                    and job.cart.carried_by is None):
+                self._complete_job(job)
+
+    def _handle_blocked_agvs(self, agvs, graph, tiles):
+        """Re-route AGVs that have been blocked too long, nudge idle blockers."""
+        for agv in agvs:
+            if not agv.is_blocked or agv.blocked_timer < BLOCK_TIMEOUT:
+                continue
+
+            # Identify the blocking tile and entity
+            blocker = None
+            if agv.path and agv.path_index < len(agv.path) - 1:
+                next_tile = agv.path[agv.path_index + 1]
+                for other in agvs:
+                    if other is not agv and other.pos == next_tile:
+                        blocker = other
+                        break
+
+            # --- Nudge idle blockers aside ---
+            if (blocker and blocker.state == AGVState.IDLE
+                    and blocker.current_job is None
+                    and not blocker.carrying_cart):
+                # Find nearest unoccupied parking or spawn tile to nudge to
+                agv_positions = {a.pos for a in agvs if a is not blocker}
+                best_tile = None
+                best_dist = float('inf')
+                for pos, tile in tiles.items():
+                    if tile.tile_type in (TileType.PARKING, TileType.AGV_SPAWN):
+                        if pos not in agv_positions:
+                            d = abs(pos[0] - blocker.pos[0]) + abs(pos[1] - blocker.pos[1])
+                            if d < best_dist:
+                                best_dist = d
+                                best_tile = pos
+                if best_tile and blocker.set_destination(best_tile, graph, tiles):
+                    print(f"[Collision] Nudged idle AGV {blocker.agv_id} "
+                          f"from {blocker.pos} → {best_tile}")
+                    agv.blocked_timer = 0.0   # give time for nudge
+                continue  # skip reroute this tick — nudge may clear it
+
+            # --- Skip reroute if blocker is moving (just queue behind it) ---
+            if blocker and blocker.state not in (AGVState.IDLE,):
+                continue
+
+            # --- Attempt reroute ---
+            agv.last_reroute += agv.blocked_timer
+            if agv.last_reroute < REROUTE_COOLDOWN:
+                continue
+            if agv.reroute(graph, agvs, tiles):
+                agv.last_reroute = 0.0
+                print(f"[Collision] AGV {agv.agv_id} re-routed ({len(agv.path)} tiles)")
+            else:
+                agv.blocked_timer = 0.0
+                agv.last_reroute = 0.0
+
+    def update(self, carts, agvs, graph, tiles):
+        """Main dispatcher tick — called each frame after AGV updates."""
+        self._create_jobs(carts)
+        self._assign_jobs(agvs, graph, tiles)
+        self._progress_jobs(graph, tiles)
+        self._handle_blocked_agvs(agvs, graph, tiles)
+
 
 # ============================================================
 # MAP BUILDER
@@ -215,11 +541,13 @@ def build_map():
 
     # ==========================================================
     # 5.  NORTH HIGHWAY  (row 7, full width)
-    #     Two-lane section from col 39 to col 57 (rows 7 & 8)
-    #     for the Pack-off return path.
+    #     Two-lane section from col 1 to col 9 (spawn ↔ junction)
+    #       row 7 = outbound (East), row 8 = inbound (West)
+    #     Two-lane section from col 39 to col 57 (Pack-off return)
     # ==========================================================
     hline(1, 57, NORTH_HWY_ROW, TileType.HIGHWAY)
-    hline(39, 57, NORTH_HWY_ROW + 1, TileType.HIGHWAY)   # 2nd lane
+    hline(1, 8, NORTH_HWY_ROW + 1, TileType.HIGHWAY)      # spawn inbound lane
+    hline(39, 57, NORTH_HWY_ROW + 1, TileType.HIGHWAY)     # pack-off 2nd lane
 
     # ==========================================================
     # 6.  LEFT SECTION  –  SINGLE highway at col 9
@@ -389,7 +717,8 @@ def build_graph(tiles):
 
     # --- Junction special cases (checked first) ---
     junctions = {
-        (9, 7):   [(1, 0), (0, 1), (-1, 0)],  # East + South + West (return entry)
+        (9, 7):   [(0, 1)],              # South only (outbound → left hwy; return → inbound via (9,8))
+        (9, 8):   [(0, 1), (-1, 0)],     # South (left hwy continues) + West (inbound lane)
         (9, 38):  [(1, 0)],              # East (corner)
         (38, 38): [(0, -1)],             # North (corner)
         (38, 8):  [(0, -1), (1, 0)],     # North + East (branch)
@@ -404,9 +733,13 @@ def build_graph(tiles):
         if (x, y) in junctions:
             return junctions[(x, y)]
 
-        # North Hwy (spawn exit): row 7, cols 1-8 → East + West (return to spawn)
+        # Outbound lane: row 7, cols 1-8 → East only
         if y == 7 and 1 <= x <= 8:
-            return [(1, 0), (-1, 0)]
+            return [(1, 0)]
+
+        # Inbound lane: row 8, cols 1-8 → West only
+        if y == 8 and 1 <= x <= 8:
+            return [(-1, 0)]
 
         # North Hwy (return): row 7, cols 10-57 → West
         if y == 7 and 10 <= x <= 57:
@@ -480,9 +813,10 @@ def build_graph(tiles):
 # ============================================================
 # A* PATHFINDING
 # ============================================================
-def astar(graph, start, goal):
+def astar(graph, start, goal, blocked=None, tiles=None):
     """
-    Standard A* with Manhattan distance heuristic and uniform edge cost = 1.
+    A* with Manhattan distance heuristic and weighted edge costs.
+    Highway tiles cost 1, all other walkable tiles cost 10.
     Returns list of (x,y) from start to goal inclusive, or None if no path.
     """
     if start not in graph or goal not in graph:
@@ -510,7 +844,14 @@ def astar(graph, start, goal):
             return path
 
         for neighbor in graph.get(current, set()):
-            tentative_g = g_score[current] + 1
+            if blocked and neighbor in blocked and neighbor != goal:
+                continue
+            if tiles and neighbor != goal:
+                tile = tiles.get(neighbor)
+                edge_cost = 1 if (tile and tile.tile_type == TileType.HIGHWAY) else 10
+            else:
+                edge_cost = 1
+            tentative_g = g_score[current] + edge_cost
             if tentative_g < g_score.get(neighbor, float('inf')):
                 came_from[neighbor] = current
                 g_score[neighbor] = tentative_g
@@ -537,10 +878,15 @@ class AGV:
         self.path_progress = 0.0  # 0.0–1.0 progress between path[index] and path[index+1]
         self.carrying_cart = None   # Cart instance or None
         self.action_timer = 0.0     # countdown for pickup/dropoff
+        self.current_job = None     # Job instance or None (managed by Dispatcher)
+        self.blocked_timer = 0.0
+        self.last_reroute  = 0.0
+        self.is_blocked    = False
+        self._just_rerouted = False
 
     def set_destination(self, goal, graph, tiles):
         """Plan a path to goal. Returns True if path found."""
-        route = astar(graph, self.pos, goal)
+        route = astar(graph, self.pos, goal, tiles=tiles)
         if route is None:
             return False
         self.path = route
@@ -552,7 +898,7 @@ class AGV:
 
     def return_to_spawn(self, graph, tiles):
         """Plan a path back to AGV_SPAWN_TILE. Returns True if path found."""
-        route = astar(graph, self.pos, AGV_SPAWN_TILE)
+        route = astar(graph, self.pos, AGV_SPAWN_TILE, tiles=tiles)
         if route is None:
             return False
         self.path = route
@@ -564,7 +910,7 @@ class AGV:
 
     def pickup_cart(self, cart, graph, tiles):
         """Pathfind to cart's position, then pick it up. Returns True if path found."""
-        route = astar(graph, self.pos, cart.pos)
+        route = astar(graph, self.pos, cart.pos, tiles=tiles)
         if route is None:
             return False
         self.path = route
@@ -577,7 +923,7 @@ class AGV:
 
     def start_dropoff(self, goal, graph, tiles):
         """Pathfind to goal while carrying a cart. Returns True if path found."""
-        route = astar(graph, self.pos, goal)
+        route = astar(graph, self.pos, goal, tiles=tiles)
         if route is None:
             return False
         self.path = route
@@ -587,7 +933,30 @@ class AGV:
         self.state = AGVState.MOVING_TO_DROPOFF
         return True
 
-    def update(self, dt):
+    def reroute(self, graph, agvs, tiles=None):
+        """Re-plan path avoiding tiles occupied by other AGVs."""
+        goal = self.target or (self.path[-1] if self.path else None)
+        if goal is None:
+            return False
+        blocked = {a.pos for a in agvs if a is not self}
+        route = astar(graph, self.pos, goal, blocked=blocked, tiles=tiles)
+        if route is None:
+            return False
+        # Reject reroute if the first step is the same — would just block again
+        old_next = (self.path[self.path_index + 1]
+                    if self.path and self.path_index < len(self.path) - 1
+                    else None)
+        new_next = route[1] if len(route) > 1 else None
+        if old_next and new_next and old_next == new_next:
+            return False
+        self.path = route
+        self.path_index = 0
+        self.path_progress = 0.0
+        self.blocked_timer = 0.0
+        self.is_blocked = False
+        return True
+
+    def update(self, dt, agvs=None, carts=None, graph=None, tiles=None):
         """Advance along path or count down action timers."""
         # --- Pickup timer ---
         if self.state == AGVState.PICKING_UP:
@@ -621,10 +990,52 @@ class AGV:
         self.path_progress += AGV_SPEED * dt
 
         while self.path_progress >= 1.0 and self.path_index < len(self.path) - 1:
+            next_tile = self.path[self.path_index + 1]
+
+            # --- L1: collision check ---
+            occupied = False
+            # AGV-AGV
+            if agvs:
+                for other in agvs:
+                    if other is not self and other.pos == next_tile:
+                        occupied = True
+                        break
+            # Cart-cart: only block if THIS AGV is actually carrying a cart
+            # (carrying_cart is set early in pickup_cart() to remember the
+            #  target, but carried_by isn't set to self until pickup completes)
+            if not occupied and carts and self.carrying_cart and self.carrying_cart.carried_by is self:
+                for cart in carts:
+                    if cart.carried_by is None and cart.pos == next_tile:
+                        occupied = True
+                        break
+            if occupied:
+                # Immediate reroute: try to find alt path avoiding blocked tile
+                if graph and not self._just_rerouted:
+                    blocked_tiles = {a.pos for a in agvs if a is not self}
+                    alt = astar(graph, self.pos,
+                                self.target or self.path[-1],
+                                blocked=blocked_tiles, tiles=tiles)
+                    if alt and len(alt) > 1:
+                        if alt[1] != next_tile:
+                            self.path = alt
+                            self.path_index = 0
+                            self.path_progress = min(self.path_progress, 0.99)
+                            self._just_rerouted = True
+                            self.is_blocked = False
+                            self.blocked_timer = 0.0
+                            continue  # retry with new path
+                self.path_progress = 0.99   # hold just before boundary
+                self.is_blocked = True
+                self.blocked_timer += dt
+                return
+
+            # --- clear to advance ---
+            self._just_rerouted = False
+            self.is_blocked = False
+            self.blocked_timer = 0.0
             self.path_progress -= 1.0
             self.path_index += 1
             self.pos = self.path[self.path_index]
-            # Cart follows AGV
             if self.carrying_cart and self.carrying_cart.state == CartState.IN_TRANSIT:
                 self.carrying_cart.pos = self.pos
 
@@ -635,6 +1046,9 @@ class AGV:
             self.target = None
             self.path = []
             self.path_index = 0
+            self.is_blocked = False
+            self.blocked_timer = 0.0
+            self._just_rerouted = False
             # Cart follows on final snap
             if self.carrying_cart and self.carrying_cart.state == CartState.IN_TRANSIT:
                 self.carrying_cart.pos = self.pos
@@ -784,6 +1198,10 @@ def draw_agv(surface, agv, font):
     pygame.draw.circle(surface, AGV_COLOR, (cx, cy), radius)
     pygame.draw.circle(surface, (0, 0, 0), (cx, cy), radius, 2)
 
+    # Orange outline ring when blocked
+    if agv.is_blocked:
+        pygame.draw.circle(surface, (255, 140, 0), (cx, cy), radius + 2, 2)
+
     # Draw ID number
     id_text = font.render(str(agv.agv_id), True, (255, 255, 255))
     id_rect = id_text.get_rect(center=(cx, cy))
@@ -813,11 +1231,17 @@ def draw_cart(surface, cart, font, carried_render_pos=None):
     surface.blit(id_text, id_rect)
 
 
-def draw_ui(surface, font, agvs, selected_agv, time_scale=1.0, carts=None):
+def draw_ui(surface, font, agvs, selected_agv, time_scale=1.0, carts=None, dispatcher=None):
     """Draw status text in bottom-left corner."""
     lines = []
     cart_count = len(carts) if carts else 0
-    lines.append(f"AGVs: {len(agvs)}  Carts: {cart_count}  |  Speed: {time_scale}x  |  A=spawn  C=cart  P=pickup  R=return  TAB=cycle")
+    disp_info = ""
+    if dispatcher:
+        disp_info = (f"  |  Jobs: {len(dispatcher.pending_jobs)} pending, "
+                     f"{len(dispatcher.active_jobs)} active  |  "
+                     f"Orders completed: {dispatcher.completed_orders}")
+    lines.append(f"AGVs: {len(agvs)}  Carts: {cart_count}  |  Speed: {time_scale}x  |  "
+                 f"A=spawn  C=cart  P=pickup  R=return  TAB=cycle{disp_info}")
     if selected_agv:
         sid = selected_agv.agv_id
         st = selected_agv.state.value
@@ -827,7 +1251,20 @@ def draw_ui(surface, font, agvs, selected_agv, time_scale=1.0, carts=None):
         timer_str = ""
         if selected_agv.state in (AGVState.PICKING_UP, AGVState.DROPPING_OFF):
             timer_str = f"  timer={selected_agv.action_timer:.1f}s"
-        lines.append(f"Selected: AGV {sid}  state={st}  pos={pos}  target={tgt}{carrying}{timer_str}")
+        if selected_agv.is_blocked:
+            timer_str += f"  BLOCKED {selected_agv.blocked_timer:.1f}s"
+        job_str = ""
+        if selected_agv.current_job:
+            job_str = f"  job={selected_agv.current_job.job_type.value}"
+        lines.append(f"Selected: AGV {sid}  state={st}  pos={pos}  target={tgt}{carrying}{timer_str}{job_str}")
+        # Show cart order info if carrying
+        if selected_agv.carrying_cart and selected_agv.carrying_cart.order:
+            cart = selected_agv.carrying_cart
+            order = cart.order
+            ns = order.next_station()
+            next_str = f"S{ns}" if ns else "all picked"
+            lines.append(f"  Cart C{cart.cart_id} Order #{order.order_id}: picks={order.picks}  "
+                         f"next={next_str}  timer={cart.process_timer:.1f}s")
     else:
         lines.append("No AGV selected")
 
@@ -843,7 +1280,7 @@ def draw_ui(surface, font, agvs, selected_agv, time_scale=1.0, carts=None):
 
 
 def render(screen, tiles, font_sm, font_md, agvs=None, selected_agv=None,
-           time_scale=1.0, carts=None):
+           time_scale=1.0, carts=None, dispatcher=None):
     """Full frame render: background → tiles → labels → stationary carts → AGVs → carried carts → UI."""
     screen.fill(BG_COLOR)
 
@@ -872,7 +1309,7 @@ def render(screen, tiles, font_sm, font_md, agvs=None, selected_agv=None,
     # Draw stationary carts (before AGVs so AGVs render on top)
     if carts:
         for cart in carts:
-            if cart.state != CartState.IN_TRANSIT:
+            if cart.carried_by is None:
                 draw_cart(screen, cart, font_sm)
 
     # Draw AGVs
@@ -883,13 +1320,14 @@ def render(screen, tiles, font_sm, font_md, agvs=None, selected_agv=None,
     # Draw carried carts (after AGVs so they appear on top)
     if carts:
         for cart in carts:
-            if cart.state == CartState.IN_TRANSIT and cart.carried_by:
+            if cart.carried_by is not None:
                 render_pos = cart.carried_by.get_render_pos()
                 draw_cart(screen, cart, font_sm, carried_render_pos=render_pos)
 
     # UI overlay
     if agvs:
-        draw_ui(screen, font_sm, agvs, selected_agv, time_scale, carts=carts)
+        draw_ui(screen, font_sm, agvs, selected_agv, time_scale, carts=carts,
+                dispatcher=dispatcher)
 
 
 # ============================================================
@@ -909,7 +1347,7 @@ def verify_graph(graph, tiles):
         ("S1 pick (8,12) → Spawn (return)", (8, 12), AGV_SPAWN_TILE),
     ]
     for desc, start, goal in tests:
-        path = astar(graph, start, goal)
+        path = astar(graph, start, goal, tiles=tiles)
         if path:
             print(f"  {desc}: {len(path)} tiles, "
                   f"~{len(path) * TILE_TRAVEL_TIME:.0f}s")
@@ -933,10 +1371,12 @@ def main():
     print(f"Map built: {len(tiles)} tiles")
     print(f"Window:    {WINDOW_WIDTH}x{WINDOW_HEIGHT} px")
     print(f"Grid:      {GRID_COLS}x{GRID_ROWS}  ({TILE_SIZE}px tiles)")
-    print("Controls: A=spawn AGV, C=spawn Cart, P=pickup cart, R=return, TAB=cycle, Click=send")
+    print("Controls: A=spawn AGV, C=spawn Cart, P=pickup cart, R=return, TAB=cycle, Click=send, D=debug")
     print("Press Q or close window to quit.")
 
     verify_graph(graph, tiles)
+
+    dispatcher = Dispatcher(tiles)
 
     # AGV & cart state
     agvs = []
@@ -966,14 +1406,17 @@ def main():
 
                 elif event.key == pygame.K_a:
                     # Spawn new AGV at spawn tile
-                    new_agv = AGV(AGV_SPAWN_TILE)
-                    agvs.append(new_agv)
-                    selected_agv = new_agv
-                    print(f"Spawned AGV {new_agv.agv_id} at {AGV_SPAWN_TILE}")
+                    if any(a.pos == AGV_SPAWN_TILE for a in agvs):
+                        print("Cannot spawn: spawn tile occupied by another AGV!")
+                    else:
+                        new_agv = AGV(AGV_SPAWN_TILE)
+                        agvs.append(new_agv)
+                        selected_agv = new_agv
+                        print(f"Spawned AGV {new_agv.agv_id} at {AGV_SPAWN_TILE}")
 
                 elif event.key == pygame.K_c:
                     # Spawn cart at first available CART_SPAWN_TILE
-                    occupied = {c.pos for c in carts if c.state != CartState.IN_TRANSIT}
+                    occupied = {c.pos for c in carts if c.carried_by is None}
                     spawned = False
                     for spawn_pos in CART_SPAWN_TILES:
                         if spawn_pos not in occupied:
@@ -986,8 +1429,10 @@ def main():
                         print("All cart spawn tiles occupied!")
 
                 elif event.key == pygame.K_p:
-                    # Pickup: selected IDLE AGV (not carrying) → nearest SPAWNED/IDLE cart
-                    if selected_agv and selected_agv.state == AGVState.IDLE and not selected_agv.carrying_cart:
+                    # Pickup: selected IDLE AGV (not carrying, no job) → nearest SPAWNED/IDLE cart
+                    if selected_agv and selected_agv.current_job:
+                        print(f"AGV {selected_agv.agv_id} busy with autonomous job")
+                    elif selected_agv and selected_agv.state == AGVState.IDLE and not selected_agv.carrying_cart:
                         # Find nearest cart that is SPAWNED or IDLE
                         best_cart = None
                         best_dist = float('inf')
@@ -1032,9 +1477,75 @@ def main():
                             selected_agv = agvs[(idx + 1) % len(agvs)]
                         print(f"Selected AGV {selected_agv.agv_id}")
 
+                elif event.key == pygame.K_d:
+                    # ── DEBUG DUMP ──
+                    print("\n" + "=" * 60)
+                    print("DEBUG DUMP")
+                    print("=" * 60)
+
+                    # 1) AGV Not Moving?
+                    print("\n--- AGV Status ---")
+                    if not agvs:
+                        print("  (no AGVs spawned)")
+                    for agv in agvs:
+                        sel = " [SELECTED]" if agv is selected_agv else ""
+                        print(f"  AGV {agv.agv_id}{sel}:")
+                        print(f"    state:       {agv.state.value}")
+                        print(f"    pos:         {agv.pos}")
+                        print(f"    path:        {len(agv.path)} tiles"
+                              f"{' → ' + str(agv.path[-1]) if agv.path else ''}")
+                        print(f"    path_index:  {agv.path_index}  progress: {agv.path_progress:.2f}")
+                        print(f"    current_job: {agv.current_job.job_id if agv.current_job else None}"
+                              f"  carrying: {'C' + str(agv.carrying_cart.cart_id) if agv.carrying_cart else None}")
+
+                    # 2) Cart Not Getting Order?
+                    print("\n--- Cart Status ---")
+                    if not carts:
+                        print("  (no carts spawned)")
+                    for cart in carts:
+                        at_depot = any(
+                            t.station_id == "Box_Depot"
+                            for t in [tiles.get(cart.pos)]
+                            if t and t.station_id
+                        )
+                        print(f"  Cart C{cart.cart_id}:")
+                        print(f"    state:         {cart.state.value}")
+                        print(f"    pos:           {cart.pos}  at_box_depot: {at_depot}")
+                        print(f"    process_timer: {cart.process_timer:.1f}  (BOX_DEPOT_TIME={BOX_DEPOT_TIME})")
+                        print(f"    carried_by:    {'AGV ' + str(cart.carried_by.agv_id) if cart.carried_by else None}")
+                        print(f"    order:         {cart.order.order_id if cart.order else None}")
+
+                        # 3) Routing — remaining stations & occupancy
+                        if cart.order:
+                            remaining = [s for s in cart.order.stations_to_visit
+                                         if s not in cart.order.completed_stations]
+                            print(f"    remaining:     {['S' + str(s) for s in remaining]}")
+                            reserved = dispatcher._reserved_tiles(carts)
+                            for sid_num in remaining:
+                                sid = f"S{sid_num}"
+                                key = (sid, TileType.PICK_STATION)
+                                all_tiles = dispatcher._station_tiles.get(key, [])
+                                occupied = sum(1 for p in all_tiles if p in reserved)
+                                cap = len(all_tiles)
+                                print(f"      {sid}: {occupied}/{cap} occupied")
+
+                    # 4) Dispatcher jobs summary
+                    print(f"\n--- Dispatcher ---")
+                    print(f"  pending_jobs:  {len(dispatcher.pending_jobs)}")
+                    for j in dispatcher.pending_jobs:
+                        print(f"    Job #{j.job_id} {j.job_type.value} C{j.cart.cart_id} → {j.target_pos}")
+                    print(f"  active_jobs:   {len(dispatcher.active_jobs)}")
+                    for j in dispatcher.active_jobs:
+                        agv_id = j.assigned_agv.agv_id if j.assigned_agv else "?"
+                        print(f"    Job #{j.job_id} {j.job_type.value} C{j.cart.cart_id} → {j.target_pos} (AGV {agv_id})")
+                    print(f"  completed_orders: {dispatcher.completed_orders}")
+                    print("=" * 60 + "\n")
+
             elif event.type == pygame.MOUSEBUTTONDOWN and event.button == 1:
-                # Left click: set destination for selected idle AGV
-                if selected_agv and selected_agv.state == AGVState.IDLE:
+                # Left click: set destination for selected idle AGV (skip if busy with job)
+                if selected_agv and selected_agv.current_job:
+                    print(f"AGV {selected_agv.agv_id} busy with autonomous job")
+                elif selected_agv and selected_agv.state == AGVState.IDLE:
                     mx, my = event.pos
                     gx = mx // TILE_SIZE
                     gy = my // TILE_SIZE
@@ -1062,9 +1573,17 @@ def main():
         # Update all AGVs
         sim_dt = dt * time_scale
         for agv in agvs:
-            agv.update(sim_dt)
+            agv.update(sim_dt, agvs, carts, graph, tiles)
 
-        render(screen, tiles, font_sm, font_md, agvs, selected_agv, time_scale, carts)
+        # Update cart processing timers
+        for cart in carts:
+            cart.update(sim_dt)
+
+        # Dispatcher orchestrates autonomous cart lifecycle
+        dispatcher.update(carts, agvs, graph, tiles)
+
+        render(screen, tiles, font_sm, font_md, agvs, selected_agv, time_scale, carts,
+               dispatcher=dispatcher)
         pygame.display.flip()
 
     pygame.quit()
