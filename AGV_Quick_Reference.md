@@ -5,18 +5,19 @@
 
 ```python
 # Timing (all in seconds)
-TILE_TRAVEL_TIME = 10        # AGV movement per tile
+TILE_TRAVEL_TIME = 1.0       # AGV movement per tile
 PICKUP_TIME = 5              # AGV picking up cart
 DROPOFF_TIME = 5             # AGV dropping off cart
 PICK_TIME_PER_ITEM = 30      # Picking one item at station
 BOX_DEPOT_TIME = 45          # Loading cart with order
 PACKOFF_TIME = 60            # Unloading cart at pack-off
-AUTO_SPAWN_INTERVAL = 30     # Auto-spawn new cart
+BLOCK_TIMEOUT = 3.0          # Seconds blocked before reroute
+REROUTE_COOLDOWN = 2.0       # Min gap between reroute attempts
 
 # Display
-TILE_SIZE = 25               # pixels per tile
-SCREEN_WIDTH = 1500
-SCREEN_HEIGHT = 1000
+TILE_SIZE = 20               # pixels per tile
+WINDOW_WIDTH = 1200          # 60 * 20
+WINDOW_HEIGHT = 800          # 40 * 20
 ```
 
 ## Station Capacities
@@ -40,32 +41,36 @@ STATION_CAPACITIES = {
 ## Keyboard Controls
 
 ```python
-'C' → Spawn cart
-'A' → Spawn AGV
-'↑' → Speed up
-'↓' → Speed down
-Space → Pause/Resume
-'T' → Toggle auto-spawn
-'R' → Reset
-'Q' → Quit
+'A' → Spawn AGV at spawn tile
+'C' → Spawn cart at cart spawn zone
+'P' → Selected AGV picks up nearest cart
+'R' → Selected AGV returns to spawn
+'TAB' → Cycle selected AGV
+'D' → Debug dump (all AGV/cart/job status)
+'↑' → Speed up (×2, max 64×)
+'↓' → Speed down (÷2, min 0.25×)
+'Q'/'ESC' → Quit
+Click → Send selected AGV to tile / dropoff
 ```
 
 ## Color Scheme
 
 ```python
 COLORS = {
-    'highway': (173, 216, 230),      # Light blue
+    'highway': (100, 190, 240),      # Light blue
     'parking': (255, 255, 255),      # White
-    'pick_station': (255, 255, 0),   # Yellow
-    'box_depot': (139, 90, 43),      # Brown
-    'packoff': (147, 112, 219),      # Purple
-    'agv_spawn': (128, 128, 128),    # Gray
-    'cart_spawn': (147, 112, 219),   # Purple
-    'racking': (255, 255, 224),      # Light yellow
-    'agv': (255, 165, 0),            # Orange
-    'cart_empty': (255, 255, 255),   # White
-    'cart_active': (0, 255, 0),      # Green
-    'cart_done': (0, 0, 255),        # Blue
+    'pick_station': (255, 200, 50),  # Yellow
+    'box_depot': (170, 135, 75),     # Brown
+    'packoff': (175, 165, 225),      # Purple
+    'agv_spawn': (155, 155, 155),    # Gray
+    'cart_spawn': (195, 155, 225),   # Light purple
+    'racking': (255, 242, 185),      # Light yellow
+    'agv': (255, 60, 60),            # Red circle
+    'cart_spawned': (255, 255, 255), # White
+    'cart_in_transit': (60, 200, 60),# Green
+    'cart_processing': (255, 165, 0),# Orange
+    'cart_completed': (200, 50, 50), # Red
+    'cart_idle': (80, 140, 255),     # Blue
 }
 ```
 
@@ -94,8 +99,8 @@ if fill_rate >= 0.75:  # Priority 3 - avoid, only if necessary
 ```
 
 ### 4. Highway Direction
-- Main highway: **UNIDIRECTIONAL** (clockwise only)
-- S-zones (Phase 7+): Bidirectional
+- Main highway: **UNIDIRECTIONAL** (anti-clockwise)
+- Route: Spawn → East → South (col 9) → East (row 38) → North (col 38) → West (return lane)
 - AGVs cannot reverse on main highway
 
 ### 5. Job Assignment (Phase 1-6)
@@ -105,6 +110,14 @@ free_agvs = [agv for agv in agvs if agv.current_job is None]
 if free_agvs:
     agv = free_agvs[0]  # Take first one
 ```
+
+### Collision Avoidance & Rerouting
+- AGVs cannot share tiles (L1 collision check every tick)
+- On detecting blocked tile: immediate A* reroute attempt
+- _just_rerouted flag prevents infinite reroute loops
+- After 3s blocked: Dispatcher nudges idle blockers or reroutes
+- Reroute cooldown: 2s between attempts
+- Cart-cart blocking only when AGV.carrying_cart.carried_by is self
 
 ## Order Generation
 
@@ -119,9 +132,10 @@ picks = [random.randint(1, 9) for _ in range(length)]
 
 ### AGV States
 ```
-IDLE → MOVING → PICKING_UP → MOVING → DROPPING_OFF → IDLE
-   ↓                                                    ↑
-   └─→ RETURNING_TO_SPAWN → (arrives) ─────────────────┘
+IDLE → MOVING → PICKING_UP → IDLE (carries cart)
+IDLE → MOVING_TO_PICKUP → PICKING_UP → IDLE
+IDLE → MOVING_TO_DROPOFF → DROPPING_OFF → IDLE
+IDLE → RETURNING_TO_SPAWN → IDLE
 ```
 
 ### Cart States
@@ -153,33 +167,42 @@ if box_depot.is_full():
 ## Phase Checklist
 
 ### Phase 1: Static Map ✓
-- [ ] Map renders correctly
-- [ ] All station labels visible
-- [ ] Matches reference image
+- [x] Map renders correctly
+- [x] All station labels visible
+- [x] Matches reference image
 
 ### Phase 2: AGV Movement ✓
-- [ ] A* pathfinding works
-- [ ] AGV follows highway direction
-- [ ] Smooth tile-to-tile animation
+- [x] A* pathfinding works
+- [x] AGV follows highway direction
+- [x] Smooth tile-to-tile animation
 
 ### Phase 3: Cart Interaction ✓
-- [ ] Cart spawns with 'C'
-- [ ] AGV picks up cart (5s animation)
-- [ ] Cart follows AGV during transport
-- [ ] AGV drops off cart (5s animation)
+- [x] Cart spawns with 'C'
+- [x] AGV picks up cart (5s animation)
+- [x] Cart follows AGV during transport
+- [x] AGV drops off cart (5s animation)
 
 ### Phase 4: Complete Lifecycle ✓ (MVP)
-- [ ] Cart gets order at Box Depot (45s)
-- [ ] Cart visits required stations
-- [ ] Dwell time = 30s × items
-- [ ] Cart goes to Pack-off (60s)
-- [ ] Cart returns to Box Depot
-- [ ] Cycle repeats autonomously
+- [x] Cart gets order at Box Depot (45s)
+- [x] Cart visits required stations
+- [x] Dwell time = 30s × items
+- [x] Cart goes to Pack-off (60s)
+- [x] Cart returns to Box Depot
+- [x] Cycle repeats autonomously
 
 ### Phase 5: Multiple AGVs ✓
-- [ ] Multiple AGVs spawn with 'A'
-- [ ] Jobs distributed among AGVs
-- [ ] No conflicts or deadlocks
+- [x] Multiple AGVs spawn with 'A'
+- [x] Jobs distributed among AGVs
+- [x] No conflicts or deadlocks
+
+### Phase 5b: Collision Avoidance & Highway Preference ✓
+- [x] A* weighted costs (highway=1, other=10)
+- [x] AGV-AGV collision detection
+- [x] Cart-cart collision (only when carrying)
+- [x] Immediate reroute on block
+- [x] Dispatcher reroute after 3s timeout
+- [x] Idle blocker nudging
+- [x] 11 automated pytest tests
 
 ### Phase 6: Capacity Routing ✓
 - [ ] Priority logic works (0-50%, 50-75%, 75%+)
@@ -191,6 +214,12 @@ if box_depot.is_full():
 - [ ] Speed controls (↑↓)
 - [ ] Pause/resume (Space)
 - [ ] Auto-spawn toggle ('T')
+
+## Known Limitations
+1. No capacity-based routing yet (Phase 6 not implemented)
+2. No metrics panel or auto-spawn toggle (Phase 7 not implemented)
+3. No S-zone bidirectional lanes (Phase 7+)
+4. Collision avoidance is tile-level only (no sub-tile precision)
 
 ## Common Pitfalls
 
@@ -266,12 +295,13 @@ for sid in remaining:
 ## File Structure
 
 ```
-agv_simulation.py          # Main file (all phases)
+agv_simulation.py              # Main file (all phases)
+test_collision_avoidance.py    # Pytest test suite (11 tests)
 AGV_Warehouse_Simulation_PRD.md  # Full specification
-quick_reference.md         # This file
-README.md                  # Setup instructions
-requirements.txt           # pygame
-phases/                    # Backups
+AGV_Quick_Reference.md         # This file
+GETTING_STARTED.md             # Setup instructions
+requirements.txt               # pygame
+phases/                        # Backups
   phase1_static_map.py
   phase2_agv_movement.py
   ...

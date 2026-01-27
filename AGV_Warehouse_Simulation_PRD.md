@@ -1,6 +1,6 @@
 # AGV Warehouse Simulation - Product Requirements Document (PRD)
-**Version 1.0 - Definitive Specification**  
-**Last Updated:** January 26, 2026  
+**Version 2.0 - Definitive Specification**
+**Last Updated:** January 27, 2026
 **Technology:** Python + Pygame
 
 ---
@@ -152,11 +152,13 @@ class CartState(Enum):
     COMPLETED = "completed"  # Order complete, ready to return
 
 class AGVState(Enum):
-    IDLE = "idle"  # No job, stationary
-    RETURNING_TO_SPAWN = "returning_to_spawn"  # Returning to top-left
-    MOVING = "moving"  # Following path
-    PICKING_UP = "picking_up"  # Lifting cart
-    DROPPING_OFF = "dropping_off"  # Releasing cart
+    IDLE = "idle"
+    MOVING = "moving"
+    RETURNING_TO_SPAWN = "returning_to_spawn"
+    MOVING_TO_PICKUP = "moving_to_pickup"
+    PICKING_UP = "picking_up"
+    MOVING_TO_DROPOFF = "moving_to_dropoff"
+    DROPPING_OFF = "dropping_off"
 
 class OrderState(Enum):
     IN_PROGRESS = "in_progress"
@@ -174,9 +176,9 @@ class JobState(Enum):
 ## 3. MAP & LAYOUT SPECIFICATION
 
 ### 3.1 Tile Configuration
-- **Tile Size:** 25 pixels × 25 pixels
-- **Grid Dimensions:** Approximately 60 tiles wide × 40 tiles tall
-- **Canvas Size:** 1500 pixels × 1000 pixels
+- **Tile Size:** 20 pixels × 20 pixels
+- **Grid Dimensions:** 60 tiles wide × 40 tiles tall
+- **Canvas Size:** 1200 pixels × 800 pixels (60×20, 40×20)
 - **Coordinate System:** (0, 0) at top-left corner
 
 ### 3.2 Station Locations & Capacities
@@ -206,7 +208,8 @@ class JobState(Enum):
 - Count exact locations from image during Phase 1 implementation
 
 ### 3.3 Highway Network
-- **Main Loop:** Unidirectional, clockwise flow
+- **Main Loop:** Unidirectional, anti-clockwise flow
+  - Spawn → East along North Highway → South down col 9 → East along East Highway → North up col 38 → West along return lane
 - **Entry/Exit Points:** Each station has designated entry and exit tiles
 - **Represented By:** Blue circle tiles in visualization
 - **Navigation:** AGVs must follow directional constraints
@@ -273,7 +276,7 @@ dropoff_timer: float  # Countdown for dropoff animation
 
 **Behavior Rules:**
 1. **Spawning:** Created at top-left AGV spawn tile when user presses 'A'
-2. **Movement:** Follows path along highway tiles only (unidirectional)
+2. **Movement:** Follows path along highway, parking, pick station, and spawn tiles (highways are one-way, other tiles are bidirectional)
 3. **Job Execution:**
    - Receives job from Dispatcher
    - Computes path to pickup location
@@ -283,7 +286,7 @@ dropoff_timer: float  # Countdown for dropoff animation
    - Executes 5-second dropoff animation
    - Reports job complete to Dispatcher
 4. **Idle Behavior:** When no job assigned, returns to AGV spawn (top-left)
-5. **Collision:** Can pass through other AGVs (no collision detection in Phase 1-6)
+5. **Collision Avoidance:** AGVs detect blocked tiles ahead. If another AGV occupies the next tile, the AGV immediately attempts an A*-based reroute around the blocker. If no alternate path is found, it holds position. After 3 seconds blocked, the Dispatcher may nudge idle blockers aside or attempt a full reroute.
 
 **State Transitions:**
 ```
@@ -430,12 +433,14 @@ completion_time: Optional[float]
 
 | Constant | Value | Description |
 |----------|-------|-------------|
-| `TILE_TRAVEL_TIME` | 10 seconds | Time for AGV to move one tile |
+| `TILE_TRAVEL_TIME` | 1 second | Time for AGV to move one tile |
 | `PICKUP_TIME` | 5 seconds | Time for AGV to lift cart |
 | `DROPOFF_TIME` | 5 seconds | Time for AGV to release cart |
 | `PICK_TIME_PER_ITEM` | 30 seconds | Time to pick one item at station |
 | `BOX_DEPOT_LOADING_TIME` | 45 seconds | Time to load cart with boxes |
 | `PACKOFF_UNLOADING_TIME` | 60 seconds | Time to unload cart at Pack-off |
+| `BLOCK_TIMEOUT` | 3.0 seconds | Time before Dispatcher intervenes on a blocked AGV |
+| `REROUTE_COOLDOWN` | 2.0 seconds | Minimum time between reroute attempts |
 
 ### 5.2 Spawning
 
@@ -446,17 +451,16 @@ completion_time: Optional[float]
 ### 5.3 Derived Values
 
 ```python
-AGV_SPEED = 1.0 / TILE_TRAVEL_TIME  # = 0.1 tiles/second
+AGV_SPEED = 1.0 / TILE_TRAVEL_TIME  # = 1.0 tiles/second
 ```
 
 ### 5.4 Speed Control
 
 **User Controls:**
-- Arrow Up: Increase simulation speed multiplier
-- Arrow Down: Decrease simulation speed multiplier
-- Spacebar: Pause/Resume simulation
+- Arrow Up: Increase simulation speed (multiply by 2)
+- Arrow Down: Decrease simulation speed (divide by 2)
 
-**Speed Multipliers:** 0.5x, 1x, 2x, 5x, 10x, 20x
+**Speed Multipliers:** 0.25x, 0.5x, 1x, 2x, 4x, 8x, 16x, 32x, 64x (doubling/halving)
 
 **Implementation:**
 ```python
@@ -663,9 +667,9 @@ if box_depot_station.is_full():
 def compute_path(start: Position, goal: Position, map_data) -> List[Position]:
     """
     Returns shortest path from start to goal following highway direction rules.
-    
+
     Rules:
-    - Main highway: unidirectional (clockwise)
+    - Main highway: unidirectional (anti-clockwise)
     - S-zones (Phase 7+): bidirectional
     - Must stay on HIGHWAY or STATION tiles
     """
@@ -674,6 +678,10 @@ def compute_path(start: Position, goal: Position, map_data) -> List[Position]:
     # Heuristic: Manhattan distance
     # Return: List of positions from start to goal
 ```
+
+**Highway Preference (Edge Cost Weighting):**
+
+Edge costs are weighted: highway tiles cost 1, all other walkable tiles cost 10. This makes AGVs strongly prefer highway routes. The goal tile always costs 1 regardless of type.
 
 **Path Following:**
 ```python
@@ -708,7 +716,7 @@ class AGV:
 │                                 │                           │
 │                                 │   METRICS PANEL           │
 │          MAP CANVAS             │   ─────────────────       │
-│       (1500 x 1000 px)          │                           │
+│       (1200 x 800 px)           │                           │
 │                                 │   Time: 00:15:23          │
 │                                 │   Speed: 2.0x             │
 │                                 │                           │
@@ -807,14 +815,16 @@ BOTTLENECK ALERTS
 
 | Key | Action |
 |-----|--------|
+| `A` | Spawn new AGV at spawn tile |
 | `C` | Spawn new cart at cart spawn zone |
-| `A` | Spawn new AGV at AGV spawn zone |
-| `↑` | Increase simulation speed (0.5x → 1x → 2x → 5x → 10x → 20x) |
-| `↓` | Decrease simulation speed |
-| `Space` | Pause/Resume simulation |
-| `R` | Reset simulation (clear all entities, reset time) |
-| `T` | Toggle auto-cart spawning (1 cart per 30 seconds) |
-| `Q` | Quit application |
+| `P` | Selected AGV picks up nearest available cart |
+| `R` | Selected AGV returns to spawn |
+| `TAB` | Cycle selected AGV |
+| `D` | Debug dump (print all AGV/cart/job status) |
+| `↑` | Increase simulation speed (x2, max 64x) |
+| `↓` | Decrease simulation speed (/2, min 0.25x) |
+| `Q` / `ESC` | Quit |
+| Left Click | Send selected AGV to clicked tile (or dropoff if carrying cart) |
 
 ### 7.5 Mouse Controls (Optional)
 
@@ -827,7 +837,8 @@ BOTTLENECK ALERTS
 ## 8. PHASE IMPLEMENTATION PLAN
 
 ### PHASE 1: Static Map & Data Structures
-**Duration:** 1 day  
+**Status:** COMPLETED
+**Duration:** 1 day
 **Lines of Code:** ~300-400
 
 **Objectives:**
@@ -857,7 +868,8 @@ BOTTLENECK ALERTS
 ---
 
 ### PHASE 2: Single AGV Movement
-**Duration:** 1 day  
+**Status:** COMPLETED
+**Duration:** 1 day
 **Lines of Code:** +200
 
 **Objectives:**
@@ -887,7 +899,8 @@ BOTTLENECK ALERTS
 ---
 
 ### PHASE 3: Cart Spawning & AGV-Cart Interaction
-**Duration:** 1 day  
+**Status:** COMPLETED
+**Duration:** 1 day
 **Lines of Code:** +200
 
 **Objectives:**
@@ -921,7 +934,8 @@ BOTTLENECK ALERTS
 ---
 
 ### PHASE 4: Order System & Complete Lifecycle
-**Duration:** 2 days  
+**Status:** COMPLETED
+**Duration:** 2 days
 **Lines of Code:** +300
 
 **Objectives:**
@@ -965,7 +979,8 @@ BOTTLENECK ALERTS
 ---
 
 ### PHASE 5: Multiple AGVs & Job Queue
-**Duration:** 1 day  
+**Status:** COMPLETED
+**Duration:** 1 day
 **Lines of Code:** +200
 
 **Objectives:**
@@ -990,6 +1005,22 @@ BOTTLENECK ALERTS
 - All carts complete lifecycle
 - No deadlocks or stuck carts
 - AGVs share workload
+
+---
+
+### PHASE 5b: Collision Avoidance & Highway Preference (Implemented)
+
+**Status:** COMPLETED
+
+**Features Implemented:**
+- A* pathfinding with weighted edge costs (highway=1, other=10) for highway preference
+- AGV-AGV collision detection preventing tile overlap
+- Cart-cart collision detection (only when AGV is actively carrying)
+- Immediate reroute on block detection (no 3-second wait)
+- Dispatcher-level rerouting after 3-second block timeout
+- Idle blocker nudging (moves blocking AGVs aside)
+- Reroute cooldown (2-second minimum between attempts)
+- Comprehensive test suite (11 pytest tests in test_collision_avoidance.py)
 
 ---
 
@@ -1165,7 +1196,24 @@ Expected:
 - No crashes
 ```
 
-### 9.3 Success Criteria Summary
+### 9.3 Automated Test Suite
+
+The project includes `test_collision_avoidance.py` with 11 pytest tests:
+- `test_astar_prefers_highway` -- A* picks highway path over non-highway
+- `test_astar_blocked_tiles` -- A* avoids blocked tiles
+- `test_astar_blocked_allows_goal` -- Goal reachable even when in blocked set
+- `test_two_lane_directions` -- Row 7 eastbound, row 8 westbound
+- `test_agv_collision_block` -- AGVs cannot overlap tiles
+- `test_agv_reroute_on_block` -- Immediate reroute around blockers
+- `test_agv_reroute_rejects_same_first_step` -- Rejects redundant reroute
+- `test_spawn_guard` -- Spawn tile occupancy detection
+- `test_cart_cart_collision_only_when_carrying` -- Cart collision only when carrying
+- `test_no_tile_overlap_simulation` -- 100-tick simulation with no overlap
+- `test_highway_cost_weight` -- Weighted cost verification
+
+Run: `pytest test_collision_avoidance.py -v`
+
+### 9.4 Success Criteria Summary
 
 **The simulation is successful when:**
 
@@ -1256,6 +1304,7 @@ Expected:
 ```
 agv_warehouse_simulation/
 ├── agv_simulation.py          # Main simulation file (all phases combined)
+├── test_collision_avoidance.py # Automated test suite (11 pytest tests)
 ├── README.md                   # Setup and run instructions
 ├── AGV_Warehouse_Simulation_PRD.md  # This document
 ├── requirements.txt            # Python dependencies
@@ -1294,9 +1343,9 @@ agv_warehouse_simulation/
 # ============================================================
 
 # ----- Constants -----
-TILE_SIZE = 25
-SCREEN_WIDTH = 1500
-SCREEN_HEIGHT = 1000
+TILE_SIZE = 20
+SCREEN_WIDTH = 1200
+SCREEN_HEIGHT = 800
 
 # ----- Enums -----
 class TileType(Enum):
@@ -1374,7 +1423,7 @@ Note: I'm a beginner coder, so please include explanatory comments.
 **Include in every prompt:**
 - Link back to this PRD: "Reference AGV_Warehouse_Simulation_PRD.md for full specification"
 - Emphasize current phase: "We are implementing Phase X. Do not add features from future phases."
-- State constraints: "Tile size is 25px. Map must match reference image exactly."
+- State constraints: "Tile size is 20px. Map must match reference image exactly."
 
 **If Claude Code suggests changes to the PRD:**
 - Evaluate if the suggestion improves the design
@@ -1408,9 +1457,9 @@ Note: I'm a beginner coder, so please include explanatory comments.
    dwell_time = order.picks.count(station_id) * 30  # seconds
    ```
 
-4. **Highway Direction:** Main highway is unidirectional (clockwise). AGVs cannot go backwards.
+4. **Highway Direction:** Main highway is unidirectional (anti-clockwise). AGVs cannot go backwards.
 
-5. **Job Commitment:** Once an AGV is assigned a job, it completes it. No dynamic reassignment (until Phase 8+).
+5. **Collision Avoidance:** AGVs detect blocked tiles and reroute using A* pathfinding. Collision avoidance is active (implemented in Phase 5b).
 
 6. **Capacity-Based Routing:** Always recalculate next station based on CURRENT capacities, not initial state.
 
@@ -1419,12 +1468,14 @@ Note: I'm a beginner coder, so please include explanatory comments.
    - Carts spawn at purple cart spawn tiles (below AGV spawn)
 
 8. **Timing Constants:** These are FIXED (unless you're testing optimization scenarios):
-   - Tile travel: 10 seconds
+   - Tile travel: 1 second
    - Pickup: 5 seconds
    - Dropoff: 5 seconds
    - Pick per item: 30 seconds
    - Box Depot: 45 seconds
    - Pack-off: 60 seconds
+   - Block timeout: 3 seconds
+   - Reroute cooldown: 2 seconds
 
 ### 13.2 When to Update This PRD
 
@@ -1457,8 +1508,8 @@ PHASE 1 GOAL:
 Create the static map display matching the warehouse layout in the reference image.
 
 REQUIREMENTS:
-- Pygame window: 1500x1000 pixels
-- Tile size: 25x25 pixels
+- Pygame window: 1200x800 pixels
+- Tile size: 20x20 pixels
 - Map should have ~60x40 tiles
 - Tile types: HIGHWAY (light blue circles), PARKING (white squares), 
   PICK_STATION (yellow squares), BOX_DEPOT (brown), PACK_OFF (purple),
@@ -1492,6 +1543,15 @@ Please provide:
 ---
 
 ## DOCUMENT VERSION HISTORY
+
+**Version 2.0** - January 27, 2026
+- Updated to reflect actual implementation state through Phase 5b
+- Corrected timing constants (tile travel: 1s, not 10s)
+- Corrected tile size (20px, not 25px) and window size (1200x800)
+- Added collision avoidance and highway preference documentation
+- Updated keyboard controls to match implementation
+- Added automated test suite documentation
+- Corrected highway direction to anti-clockwise
 
 **Version 1.0** - January 26, 2026
 - Initial comprehensive PRD based on requirement clarification
