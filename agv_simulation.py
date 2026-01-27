@@ -78,7 +78,7 @@ AGV_COLOR        = (255, 60, 60)
 AGV_SPAWN_TILE   = (1, 7)   # leftmost North Highway tile at spawn exit
 
 # Cart constants
-CART_SPAWN_TILES = [(0, 7), (0, 8)]
+CART_SPAWN_TILES = [(0, 7)]
 PICKUP_TIME  = 5.0          # seconds to pick up a cart
 DROPOFF_TIME = 5.0          # seconds to drop off a cart
 CART_COLOR_SPAWNED    = (255, 255, 255)  # white
@@ -440,7 +440,7 @@ class Dispatcher:
                     and blocker.current_job is None
                     and not blocker.carrying_cart):
                 # Find nearest unoccupied parking or spawn tile to nudge to
-                agv_positions = {a.pos for a in agvs if a is not blocker}
+                agv_positions = {a.pos for a in agvs}  # includes blocker's own tile
                 best_tile = None
                 best_dist = float('inf')
                 for pos, tile in tiles.items():
@@ -512,10 +512,9 @@ def build_map():
     fill_rect(1, 0, 8, 6, TileType.AGV_SPAWN)
 
     # ==========================================================
-    # 2.  CART SPAWN  (left edge, rows 7-8)
+    # 2.  CART SPAWN  (left edge, row 7 only)
     # ==========================================================
     put(0, 7, TileType.CART_SPAWN)
-    put(0, 8, TileType.CART_SPAWN)
 
     # ==========================================================
     # 3.  BOX DEPOT  (top-centre, brown rectangle)
@@ -717,7 +716,7 @@ def build_graph(tiles):
 
     # --- Junction special cases (checked first) ---
     junctions = {
-        (9, 7):   [(0, 1)],              # South only (outbound → left hwy; return → inbound via (9,8))
+        (9, 7):   [(0, 1), (-1, 0)],     # South (outbound → left hwy) + West (return lane → spawn)
         (9, 8):   [(0, 1), (-1, 0)],     # South (left hwy continues) + West (inbound lane)
         (9, 38):  [(1, 0)],              # East (corner)
         (38, 38): [(0, -1)],             # North (corner)
