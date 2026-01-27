@@ -34,9 +34,24 @@ from enum import Enum
 TILE_SIZE = 20          # Each tile is 20x20 pixels
 GRID_COLS = 60          # 60 columns  (x: 0-59, left to right)
 GRID_ROWS = 40          # 40 rows     (y: 0-39, top to bottom)
-WINDOW_WIDTH  = GRID_COLS * TILE_SIZE   # 1500 px
-WINDOW_HEIGHT = GRID_ROWS * TILE_SIZE   # 1000 px
+MAP_WIDTH     = GRID_COLS * TILE_SIZE   # 1200 px (map area)
+MAP_HEIGHT    = GRID_ROWS * TILE_SIZE  # 800 px
+PANEL_WIDTH   = 300
+WINDOW_WIDTH  = MAP_WIDTH + PANEL_WIDTH  # 1500 px total
+WINDOW_HEIGHT = MAP_HEIGHT               # 800 px
 FPS = 30
+
+SPEED_STEPS = [0.5, 1.0, 2.0, 5.0, 10.0, 20.0]
+AUTO_SPAWN_INTERVAL = 30.0   # sim-seconds between auto-spawned carts
+
+# Panel color palette
+PANEL_BG        = (30, 30, 40)
+PANEL_TEXT       = (200, 200, 210)
+PANEL_HEADER     = (140, 160, 255)
+PANEL_SEPARATOR  = (60, 60, 80)
+PANEL_GREEN      = (80, 220, 100)
+PANEL_YELLOW     = (230, 200, 60)
+PANEL_RED        = (230, 70, 70)
 
 # ============================================================
 # TILE TYPES
@@ -232,6 +247,11 @@ class Dispatcher:
         self.active_jobs = []
         self.completed_orders = 0
         self._station_fill_cache = {}
+        # Throughput tracking
+        self.order_completion_times = []
+        self.cart_start_times = {}   # { cart_id: sim_elapsed when spawned }
+        self.cycle_times = []
+        self._sim_elapsed = 0.0
 
     def _reserved_tiles(self, carts):
         """Return set of tiles occupied by stationary carts or targeted by jobs."""
@@ -309,6 +329,7 @@ class Dispatcher:
                 if target:
                     job = Job(JobType.PICKUP_TO_BOX_DEPOT, cart, target)
                     self.pending_jobs.append(job)
+                    self.cart_start_times[cart.cart_id] = self._sim_elapsed
 
             elif cart.state == CartState.AT_BOX_DEPOT and cart.process_timer <= 0:
                 # Generate order if cart has none
@@ -423,6 +444,12 @@ class Dispatcher:
             cart.process_timer = BOX_DEPOT_TIME
             cart.order = None
             self.completed_orders += 1
+            # Track cycle time
+            start_t = self.cart_start_times.pop(cart.cart_id, None)
+            if start_t is not None:
+                cycle = self._sim_elapsed - start_t
+                self.cycle_times.append(cycle)
+                self.order_completion_times.append(self._sim_elapsed)
             print(f"[Dispatcher] C{cart.cart_id} returned to Box Depot — "
                   f"completed orders: {self.completed_orders}")
 
@@ -514,13 +541,58 @@ class Dispatcher:
         """Return list of PICK_STATION tile positions for a given station."""
         return self._station_tiles.get((station_id, TileType.PICK_STATION), [])
 
-    def update(self, carts, agvs, graph, tiles):
+    def update(self, carts, agvs, graph, tiles, sim_elapsed=0.0):
         """Main dispatcher tick — called each frame after AGV updates."""
+        self._sim_elapsed = sim_elapsed
         self._station_fill_cache = self.get_station_fill(carts)
         self._create_jobs(carts, graph, tiles)
         self._assign_jobs(agvs, graph, tiles)
         self._progress_jobs(graph, tiles)
         self._handle_blocked_agvs(agvs, graph, tiles)
+
+    def get_bottleneck_alerts(self, carts):
+        """Return list of alert strings for current bottlenecks."""
+        alerts = []
+        fill = self._station_fill_cache or self.get_station_fill(carts)
+
+        # Pack-off full or queue > 3
+        po_cur, po_cap, po_rate = fill.get("Pack_off", (0, 4, 0.0))
+        if po_cur >= po_cap:
+            alerts.append("Pack-off FULL")
+        elif len([j for j in self.pending_jobs + self.active_jobs
+                  if j.job_type == JobType.MOVE_TO_PACKOFF]) > 3:
+            alerts.append("Pack-off queue > 3")
+
+        # Stations at 100% with carts waiting
+        for i in range(1, 10):
+            sid = f"S{i}"
+            cur, cap, rate = fill.get(sid, (0, 0, 0.0))
+            if cur >= cap and cap > 0:
+                waiting = len([j for j in self.pending_jobs + self.active_jobs
+                               if j.station_id == sid])
+                if waiting > 0:
+                    alerts.append(f"{sid} FULL ({waiting} waiting)")
+
+        # Box Depot full with spawned carts
+        bd_cur, bd_cap, bd_rate = fill.get("Box_Depot", (0, 8, 0.0))
+        spawned_count = sum(1 for c in carts if c.state == CartState.SPAWNED)
+        if bd_cur >= bd_cap and spawned_count > 0:
+            alerts.append(f"Box Depot FULL ({spawned_count} spawned)")
+
+        return alerts
+
+    def get_throughput_stats(self, sim_elapsed):
+        """Return dict with completed, avg_cycle, per_hour."""
+        completed = self.completed_orders
+        avg_cycle = (sum(self.cycle_times) / len(self.cycle_times)
+                     if self.cycle_times else 0.0)
+        per_hour = (completed / (sim_elapsed / 3600.0)
+                    if sim_elapsed > 0 else 0.0)
+        return {
+            "completed": completed,
+            "avg_cycle": avg_cycle,
+            "per_hour": per_hour,
+        }
 
 
 # ============================================================
@@ -1334,7 +1406,7 @@ def draw_ui(surface, font, agvs, selected_agv, time_scale=1.0, carts=None, dispa
     else:
         lines.append("No AGV selected")
 
-    y = WINDOW_HEIGHT - 10 - len(lines) * 18
+    y = MAP_HEIGHT - 10 - len(lines) * 18
     for line in lines:
         txt = font.render(line, True, (0, 0, 0))
         bg_rect = txt.get_rect(topleft=(10, y))
@@ -1345,9 +1417,148 @@ def draw_ui(surface, font, agvs, selected_agv, time_scale=1.0, carts=None, dispa
         y += 18
 
 
+def draw_metrics_panel(surface, font_sm, font_md, agvs, carts, dispatcher,
+                       sim_elapsed, time_scale, paused, auto_spawn,
+                       selected_agv=None):
+    """Draw the 300px metrics panel on the right side of the window."""
+    px = MAP_WIDTH  # panel x origin
+    panel_rect = pygame.Rect(px, 0, PANEL_WIDTH, MAP_HEIGHT)
+    pygame.draw.rect(surface, PANEL_BG, panel_rect)
+
+    y = 10
+    line_h = 16
+    section_gap = 8
+
+    def header(text):
+        nonlocal y
+        pygame.draw.line(surface, PANEL_SEPARATOR, (px + 10, y), (px + PANEL_WIDTH - 10, y))
+        y += 4
+        txt = font_md.render(text, True, PANEL_HEADER)
+        surface.blit(txt, (px + 10, y))
+        y += line_h + 4
+
+    def row(label, value, color=PANEL_TEXT):
+        nonlocal y
+        txt = font_sm.render(f"  {label}: {value}", True, color)
+        surface.blit(txt, (px + 8, y))
+        y += line_h
+
+    def row_raw(text, color=PANEL_TEXT):
+        nonlocal y
+        txt = font_sm.render(f"  {text}", True, color)
+        surface.blit(txt, (px + 8, y))
+        y += line_h
+
+    # ── 1. SIMULATION ──
+    header("SIMULATION")
+    hours = int(sim_elapsed // 3600)
+    mins = int((sim_elapsed % 3600) // 60)
+    secs = int(sim_elapsed % 60)
+    row("Elapsed", f"{hours:02d}:{mins:02d}:{secs:02d}")
+    row("Speed", f"{time_scale}x")
+    status_color = PANEL_RED if paused else PANEL_GREEN
+    status_text = "PAUSED" if paused else "Running"
+    row("Status", status_text, status_color)
+    as_color = PANEL_GREEN if auto_spawn else PANEL_TEXT
+    row("Auto-spawn", "ON" if auto_spawn else "OFF", as_color)
+    y += section_gap
+
+    # ── 2. FLEET STATUS ──
+    header("FLEET STATUS")
+    agv_list = agvs or []
+    idle_count = sum(1 for a in agv_list if a.state == AGVState.IDLE)
+    active_count = len(agv_list) - idle_count
+    row("AGVs", f"{active_count} active / {idle_count} idle / {len(agv_list)} total")
+
+    cart_list = carts or []
+    spawned = sum(1 for c in cart_list if c.state == CartState.SPAWNED)
+    in_transit = sum(1 for c in cart_list if c.state in (
+        CartState.TO_BOX_DEPOT, CartState.IN_TRANSIT_TO_PICK,
+        CartState.IN_TRANSIT_TO_PACKOFF, CartState.IN_TRANSIT))
+    processing = sum(1 for c in cart_list if c.state in (
+        CartState.AT_BOX_DEPOT, CartState.PICKING, CartState.AT_PACKOFF))
+    completed = sum(1 for c in cart_list if c.state == CartState.COMPLETED)
+    row("Carts", f"{len(cart_list)} total")
+    row_raw(f"Spawned: {spawned}  Transit: {in_transit}")
+    row_raw(f"Processing: {processing}  Done: {completed}")
+    y += section_gap
+
+    # ── 3. STATION CAPACITY ──
+    header("STATION CAPACITY")
+    fill = dispatcher._station_fill_cache if dispatcher else {}
+    station_order = ["Box_Depot", "S1", "S2", "S3", "S4", "S5", "S6", "S7", "S8", "S9", "Pack_off"]
+    for sid in station_order:
+        cur, cap, rate = fill.get(sid, (0, STATIONS.get(sid, 0), 0.0))
+        pct = int(rate * 100)
+        # Color dot
+        if rate <= 0.50:
+            dot_color = PANEL_GREEN
+        elif rate <= 0.75:
+            dot_color = PANEL_YELLOW
+        else:
+            dot_color = PANEL_RED
+        # Draw dot
+        dot_y = y + line_h // 2
+        pygame.draw.circle(surface, dot_color, (px + 16, dot_y), 4)
+        # Label
+        display_name = sid.replace("_", " ")
+        txt = font_sm.render(f"    {display_name}: {cur}/{cap} ({pct}%)", True, PANEL_TEXT)
+        surface.blit(txt, (px + 8, y))
+        y += line_h
+    y += section_gap
+
+    # ── 4. THROUGHPUT ──
+    header("THROUGHPUT")
+    if dispatcher:
+        stats = dispatcher.get_throughput_stats(sim_elapsed)
+        row("Completed", str(stats["completed"]))
+        avg_c = stats["avg_cycle"]
+        if avg_c > 0:
+            am = int(avg_c // 60)
+            asec = int(avg_c % 60)
+            row("Avg cycle", f"{am}m {asec}s")
+        else:
+            row("Avg cycle", "--")
+        row("Orders/hr", f"{stats['per_hour']:.1f}")
+    y += section_gap
+
+    # ── 5. BOTTLENECK ALERTS ──
+    header("ALERTS")
+    if dispatcher:
+        alerts = dispatcher.get_bottleneck_alerts(carts or [])
+        if alerts:
+            for alert in alerts[:5]:
+                row_raw(f"! {alert}", PANEL_RED)
+        else:
+            row_raw("No alerts", PANEL_GREEN)
+    y += section_gap
+
+    # ── 6. SELECTED AGV ──
+    header("SELECTED AGV")
+    if selected_agv:
+        row("ID", str(selected_agv.agv_id))
+        row("State", selected_agv.state.value)
+        row("Pos", str(selected_agv.pos))
+        if selected_agv.carrying_cart:
+            row("Carrying", f"C{selected_agv.carrying_cart.cart_id}")
+        if selected_agv.current_job:
+            row("Job", selected_agv.current_job.job_type.value)
+        if selected_agv.is_blocked:
+            row("Blocked", f"{selected_agv.blocked_timer:.1f}s", PANEL_RED)
+    else:
+        row_raw("None (TAB to select)", PANEL_TEXT)
+    y += section_gap
+
+    # ── 7. Controls hint ──
+    controls_y = MAP_HEIGHT - 20
+    ctrl_txt = font_sm.render("A:AGV C:Cart T:Auto Space:Pause Up/Dn:Speed", True, PANEL_SEPARATOR)
+    surface.blit(ctrl_txt, (px + 10, controls_y))
+
+
 def render(screen, tiles, font_sm, font_md, agvs=None, selected_agv=None,
-           time_scale=1.0, carts=None, dispatcher=None):
-    """Full frame render: background → tiles → labels → stationary carts → AGVs → carried carts → UI."""
+           time_scale=1.0, carts=None, dispatcher=None,
+           sim_elapsed=0.0, paused=False, auto_spawn=False):
+    """Full frame render: background → tiles → labels → stationary carts → AGVs → carried carts → panel."""
     screen.fill(BG_COLOR)
 
     # Draw tiles in layer order (bottom layers first)
@@ -1407,10 +1618,10 @@ def render(screen, tiles, font_sm, font_md, agvs=None, selected_agv=None,
                 render_pos = cart.carried_by.get_render_pos()
                 draw_cart(screen, cart, font_sm, carried_render_pos=render_pos)
 
-    # UI overlay
-    if agvs:
-        draw_ui(screen, font_sm, agvs, selected_agv, time_scale, carts=carts,
-                dispatcher=dispatcher)
+    # Metrics panel (right side)
+    draw_metrics_panel(screen, font_sm, font_md, agvs or [], carts or [],
+                       dispatcher, sim_elapsed, time_scale, paused, auto_spawn,
+                       selected_agv=selected_agv)
 
 
 # ============================================================
@@ -1455,6 +1666,7 @@ def main():
     print(f"Window:    {WINDOW_WIDTH}x{WINDOW_HEIGHT} px")
     print(f"Grid:      {GRID_COLS}x{GRID_ROWS}  ({TILE_SIZE}px tiles)")
     print("Controls: A=spawn AGV, C=spawn Cart, P=pickup cart, R=return, TAB=cycle, Click=send, D=debug")
+    print("          Space=pause, T=auto-spawn, Up/Down=speed steps")
     print("Press Q or close window to quit.")
 
     verify_graph(graph, tiles)
@@ -1466,6 +1678,11 @@ def main():
     carts = []
     selected_agv = None
     time_scale = 1.0        # multiplier for simulation speed
+    speed_index = 1         # index into SPEED_STEPS (1.0x)
+    paused = False
+    auto_spawn = False
+    auto_spawn_timer = 0.0
+    sim_elapsed = 0.0
 
     running = True
     while running:
@@ -1480,12 +1697,23 @@ def main():
                     running = False
 
                 elif event.key == pygame.K_UP:
-                    time_scale = min(time_scale * 2, 64.0)
+                    speed_index = min(speed_index + 1, len(SPEED_STEPS) - 1)
+                    time_scale = SPEED_STEPS[speed_index]
                     print(f"Speed: {time_scale}x")
 
                 elif event.key == pygame.K_DOWN:
-                    time_scale = max(time_scale / 2, 0.25)
+                    speed_index = max(speed_index - 1, 0)
+                    time_scale = SPEED_STEPS[speed_index]
                     print(f"Speed: {time_scale}x")
+
+                elif event.key == pygame.K_SPACE:
+                    paused = not paused
+                    print(f"{'PAUSED' if paused else 'RESUMED'}")
+
+                elif event.key == pygame.K_t:
+                    auto_spawn = not auto_spawn
+                    auto_spawn_timer = 0.0
+                    print(f"Auto-spawn: {'ON' if auto_spawn else 'OFF'}")
 
                 elif event.key == pygame.K_a:
                     # Spawn new AGV at spawn tile
@@ -1625,11 +1853,13 @@ def main():
                     print("=" * 60 + "\n")
 
             elif event.type == pygame.MOUSEBUTTONDOWN and event.button == 1:
+                mx, my = event.pos
+                if mx >= MAP_WIDTH:
+                    continue  # click in panel area — ignore
                 # Left click: set destination for selected idle AGV (skip if busy with job)
                 if selected_agv and selected_agv.current_job:
                     print(f"AGV {selected_agv.agv_id} busy with autonomous job")
                 elif selected_agv and selected_agv.state == AGVState.IDLE:
-                    mx, my = event.pos
                     gx = mx // TILE_SIZE
                     gy = my // TILE_SIZE
                     clicked = (gx, gy)
@@ -1653,20 +1883,38 @@ def main():
                                 else:
                                     print(f"AGV {selected_agv.agv_id}: no path to {clicked}!")
 
-        # Update all AGVs
-        sim_dt = dt * time_scale
-        for agv in agvs:
-            agv.update(sim_dt, agvs, carts, graph, tiles)
+        # Compute sim delta (zero when paused)
+        sim_dt = dt * time_scale if not paused else 0.0
+        sim_elapsed += sim_dt
 
-        # Update cart processing timers
-        for cart in carts:
-            cart.update(sim_dt)
+        # Auto-spawn carts
+        if auto_spawn and not paused:
+            auto_spawn_timer += sim_dt
+            if auto_spawn_timer >= AUTO_SPAWN_INTERVAL:
+                auto_spawn_timer -= AUTO_SPAWN_INTERVAL
+                occupied = {c.pos for c in carts if c.carried_by is None}
+                for spawn_pos in CART_SPAWN_TILES:
+                    if spawn_pos not in occupied:
+                        new_cart = Cart(spawn_pos)
+                        carts.append(new_cart)
+                        print(f"[Auto] Spawned Cart C{new_cart.cart_id} at {spawn_pos}")
+                        break
 
-        # Dispatcher orchestrates autonomous cart lifecycle
-        dispatcher.update(carts, agvs, graph, tiles)
+        if not paused:
+            # Update all AGVs
+            for agv in agvs:
+                agv.update(sim_dt, agvs, carts, graph, tiles)
+
+            # Update cart processing timers
+            for cart in carts:
+                cart.update(sim_dt)
+
+            # Dispatcher orchestrates autonomous cart lifecycle
+            dispatcher.update(carts, agvs, graph, tiles, sim_elapsed=sim_elapsed)
 
         render(screen, tiles, font_sm, font_md, agvs, selected_agv, time_scale, carts,
-               dispatcher=dispatcher)
+               dispatcher=dispatcher, sim_elapsed=sim_elapsed, paused=paused,
+               auto_spawn=auto_spawn)
         pygame.display.flip()
 
     pygame.quit()
