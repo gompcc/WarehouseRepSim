@@ -24,8 +24,11 @@ Quit: Press Q or close the window.
 
 import pygame
 import sys
+import os
+import contextlib
 import heapq
 import random
+import time as _time
 from enum import Enum
 
 # ============================================================
@@ -41,7 +44,7 @@ WINDOW_WIDTH  = MAP_WIDTH + PANEL_WIDTH  # 1500 px total
 WINDOW_HEIGHT = MAP_HEIGHT               # 800 px
 FPS = 30
 
-SPEED_STEPS = [0.5, 1.0, 2.0, 5.0, 10.0, 20.0]
+SPEED_STEPS = [0.5, 1.0, 2.0, 5.0, 10.0, 20.0, 50.0, 100.0]
 AUTO_SPAWN_INTERVAL = 30.0   # sim-seconds between auto-spawned carts
 
 # Panel color palette
@@ -101,7 +104,7 @@ CART_COLOR_IN_TRANSIT = (60, 200, 60)    # green
 CART_COLOR_IDLE       = (80, 140, 255)   # blue
 
 BOX_DEPOT_TIME     = 45.0   # seconds processing at box depot
-PICK_TIME_PER_ITEM = 30.0   # seconds per item at pick station
+PICK_TIME_PER_ITEM = 90.0   # seconds per item at pick station
 PACKOFF_TIME       = 60.0   # seconds processing at pack-off
 CART_COLOR_PROCESSING = (255, 165, 0)   # orange
 CART_COLOR_COMPLETED  = (200, 50, 50)   # red
@@ -1648,6 +1651,129 @@ def verify_graph(graph, tiles):
         else:
             print(f"  {desc}: NO PATH FOUND!")
     print("--- End verification ---\n")
+
+
+def _reset_id_counters():
+    """Reset class-level ID counters so each headless run starts fresh."""
+    AGV._next_id = 1
+    Cart._next_id = 1
+    Order._next_id = 1
+    Job._next_id = 1
+
+
+def run_headless(num_agvs=4, num_carts=8, sim_duration=28800.0, tick_dt=0.1,
+                 verbose=False):
+    """Run the simulation without pygame rendering, using a fixed timestep.
+
+    Returns a dict of performance metrics.
+    """
+    _reset_id_counters()
+    wall_start = _time.monotonic()
+
+    tiles = build_map()
+    graph = build_graph(tiles)
+    dispatcher = Dispatcher(tiles)
+
+    sim_elapsed = 0.0
+    total_ticks = 0
+
+    # --- Instant pre-placement of all AGVs and carts on valid tiles ---
+    placeable = [pos for pos in graph
+                 if tiles[pos].tile_type in (TileType.PARKING, TileType.PICK_STATION)]
+    random.shuffle(placeable)
+
+    total_entities = num_agvs + num_carts
+    if total_entities > len(placeable):
+        raise ValueError(
+            f"Cannot place {total_entities} entities ({num_agvs} AGVs + "
+            f"{num_carts} carts) — only {len(placeable)} PARKING/PICK_STATION "
+            f"tiles available in the graph."
+        )
+
+    agvs = []
+    carts = []
+    slot = 0
+    for _ in range(num_agvs):
+        agvs.append(AGV(placeable[slot]))
+        slot += 1
+    for _ in range(num_carts):
+        carts.append(Cart(placeable[slot]))
+        slot += 1
+
+    # Utilization tracking (per-AGV tick counters) — active from tick 0
+    idle_ticks = {agv.agv_id: 0 for agv in agvs}
+    blocked_ticks = {agv.agv_id: 0 for agv in agvs}
+    total_tracked = {agv.agv_id: 0 for agv in agvs}
+
+    # Optionally suppress all print output
+    devnull = open(os.devnull, 'w') if not verbose else None
+    ctx = contextlib.redirect_stdout(devnull) if devnull else contextlib.nullcontext()
+
+    try:
+        with ctx:
+            while sim_elapsed < sim_duration:
+                # --- Update AGVs ---
+                for agv in agvs:
+                    agv.update(tick_dt, agvs, carts, graph, tiles)
+
+                # --- Update cart processing timers ---
+                for cart in carts:
+                    cart.update(tick_dt)
+
+                # --- Dispatcher ---
+                dispatcher.update(carts, agvs, graph, tiles, sim_elapsed=sim_elapsed)
+
+                # --- Utilization tracking ---
+                for agv in agvs:
+                    total_tracked[agv.agv_id] += 1
+                    if agv.state == AGVState.IDLE:
+                        idle_ticks[agv.agv_id] += 1
+                    if agv.is_blocked:
+                        blocked_ticks[agv.agv_id] += 1
+
+                sim_elapsed += tick_dt
+                total_ticks += 1
+    finally:
+        if devnull is not None:
+            devnull.close()
+
+    wall_elapsed = _time.monotonic() - wall_start
+
+    # --- Compute metrics ---
+    completed = dispatcher.completed_orders
+    hours = sim_elapsed / 3600.0
+    orders_per_hour = completed / hours if hours > 0 else 0.0
+
+    cycle_times = list(dispatcher.cycle_times)
+    avg_cycle = sum(cycle_times) / len(cycle_times) if cycle_times else 0.0
+
+    # Utilization: fraction of tracked ticks NOT idle
+    total_t = sum(total_tracked.values())
+    total_idle = sum(idle_ticks.values())
+    total_blocked = sum(blocked_ticks.values())
+    agv_utilization = 1.0 - (total_idle / total_t) if total_t > 0 else 0.0
+    agv_blocked_fraction = total_blocked / total_t if total_t > 0 else 0.0
+
+    # Station fill snapshot
+    station_fill = {}
+    fill_data = dispatcher.get_station_fill(carts)
+    for sid, (cur, cap, rate) in fill_data.items():
+        station_fill[sid] = {"current": cur, "capacity": cap, "fill_rate": rate}
+
+    return {
+        "num_agvs": num_agvs,
+        "num_carts": num_carts,
+        "completed_orders": completed,
+        "orders_per_hour": orders_per_hour,
+        "avg_cycle_time": avg_cycle,
+        "cycle_times": cycle_times,
+        "agv_utilization": agv_utilization,
+        "agv_blocked_fraction": agv_blocked_fraction,
+        "station_fill": station_fill,
+        "sim_duration": sim_elapsed,
+        "wall_clock_seconds": wall_elapsed,
+        "total_ticks": total_ticks,
+    }
 
 
 def main():
