@@ -1342,29 +1342,12 @@ agv_warehouse_simulation/
 ├── run_tests.py               # Test runner script
 ├── README.md                   # Setup and run instructions
 ├── AGV_Warehouse_Simulation_PRD.md  # This document
-├── requirements.txt            # Python dependencies
-└── phases/                     # Backup: one file per phase
-    ├── phase1_static_map.py
-    ├── phase2_agv_movement.py
-    ├── phase3_cart_interaction.py
-    ├── phase4_complete_lifecycle.py
-    ├── phase5_multiple_agvs.py
-    ├── phase6_capacity_routing.py
-    └── phase7_metrics_ui.py
+└── requirements.txt            # Python dependencies
 ```
 
 ### 11.2 Development Approach
 
-**Recommended: Single Evolving File**
-- Develop in `agv_simulation.py`
-- Add comments marking each phase
-- After completing each phase, save backup to `phases/phaseN_description.py`
-- This keeps the working file coherent while preserving history
-
-**Alternative: Separate Files**
-- Develop `phase1_static_map.py`, run and test
-- Copy to `phase2_agv_movement.py`, add new features
-- Continue copying forward each phase
+**Single evolving file** — all development happens in `agv_simulation.py`. Git history serves as the phase-by-phase backup.
 - Pro: Easy to roll back to previous working state
 - Con: Harder to see full context
 
