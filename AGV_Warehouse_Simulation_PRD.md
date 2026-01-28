@@ -1,6 +1,6 @@
 # AGV Warehouse Simulation - Product Requirements Document (PRD)
-**Version 2.0 - Definitive Specification**
-**Last Updated:** January 27, 2026
+**Version 2.1 - Definitive Specification**
+**Last Updated:** January 28, 2026
 **Technology:** Python + Pygame
 
 ---
@@ -1198,7 +1198,7 @@ Expected:
 
 ### 9.3 Automated Test Suite
 
-The project includes `test_collision_avoidance.py` with 11 pytest tests:
+The project includes `test_collision_avoidance.py` with 17 pytest tests:
 - `test_astar_prefers_highway` -- A* picks highway path over non-highway
 - `test_astar_blocked_tiles` -- A* avoids blocked tiles
 - `test_astar_blocked_allows_goal` -- Goal reachable even when in blocked set
@@ -1210,10 +1210,43 @@ The project includes `test_collision_avoidance.py` with 11 pytest tests:
 - `test_cart_cart_collision_only_when_carrying` -- Cart collision only when carrying
 - `test_no_tile_overlap_simulation` -- 100-tick simulation with no overlap
 - `test_highway_cost_weight` -- Weighted cost verification
+- `test_get_station_fill_empty` -- Station fill with no carts
+- `test_get_station_fill_with_carts` -- Station fill with carts present
+- `test_pick_best_station_prefers_emptier` -- Routing prefers emptier stations
+- `test_pick_best_station_distance_tiebreak` -- Distance breaks ties
+- `test_pick_best_station_skips_full` -- Full stations are skipped
+- `test_nearest_agv_assignment` -- Nearest idle AGV gets the job
 
 Run: `pytest test_collision_avoidance.py -v`
 
-### 9.4 Success Criteria Summary
+### 9.4 Headless Mode & Parameter Sweep
+
+**Headless mode** (`run_headless()`) runs the simulation without Pygame rendering for automated testing and benchmarking.
+
+**Key design: Instant-spawn.** All AGVs and carts are pre-placed on random PARKING/PICK_STATION tiles at tick 0 (no stagger-spawn corridor). This eliminates spawn bottlenecks and gives every configuration a fair, controlled test from the first tick. The fleet size is fixed for the entire run — no auto-spawn.
+
+```python
+from agv_simulation import run_headless
+
+result = run_headless(
+    num_agvs=14,        # Number of AGVs
+    num_carts=20,       # Number of carts
+    sim_duration=7200,  # Sim-seconds to run
+    tick_dt=0.1,        # Timestep per tick
+    verbose=False,      # Suppress dispatcher print output
+)
+# Returns dict: completed_orders, orders_per_hour, avg_cycle_time,
+#   agv_utilization, agv_blocked_fraction, station_fill, wall_clock_seconds, etc.
+```
+
+**Parameter sweep** (`sweep.py`) runs `run_headless()` across combinations of AGV/cart counts:
+
+```bash
+python sweep.py --agvs 4,8,12 --carts 8,16,24 --duration 7200 --tick-dt 0.1 --parallel
+python sweep.py --csv results.csv   # Write results to CSV
+```
+
+### 9.5 Success Criteria Summary
 
 **The simulation is successful when:**
 
@@ -1304,7 +1337,9 @@ Run: `pytest test_collision_avoidance.py -v`
 ```
 agv_warehouse_simulation/
 ├── agv_simulation.py          # Main simulation file (all phases combined)
-├── test_collision_avoidance.py # Automated test suite (11 pytest tests)
+├── test_collision_avoidance.py # Automated test suite (17 pytest tests)
+├── sweep.py                   # Parameter sweep across AGV/cart counts
+├── run_tests.py               # Test runner script
 ├── README.md                   # Setup and run instructions
 ├── AGV_Warehouse_Simulation_PRD.md  # This document
 ├── requirements.txt            # Python dependencies
@@ -1543,6 +1578,12 @@ Please provide:
 ---
 
 ## DOCUMENT VERSION HISTORY
+
+**Version 2.1** - January 28, 2026
+- Added headless mode (`run_headless()`) with instant-spawn pre-placement
+- Added parameter sweep tooling (`sweep.py`) for throughput benchmarking
+- Updated test suite documentation (11 → 17 tests)
+- Added `sweep.py` and `run_tests.py` to file structure
 
 **Version 2.0** - January 27, 2026
 - Updated to reflect actual implementation state through Phase 5b
