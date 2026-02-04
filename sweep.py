@@ -10,42 +10,22 @@ Usage:
     python sweep.py --agvs 4,8 --carts 8,16 --duration 1800
     python sweep.py --csv results.csv --parallel
 """
-import sys
-import types
 import argparse
 import csv
 import multiprocessing
-import os
 
-# ── Pygame stub (same pattern as test_collision_avoidance.py) ──
-_pg = types.ModuleType("pygame")
-_pg.init = lambda: None
-_pg.quit = lambda: None
-_pg.display = types.ModuleType("pygame.display")
-_pg.display.set_mode = lambda *a, **k: None
-_pg.display.set_caption = lambda *a, **k: None
-_pg.font = types.ModuleType("pygame.font")
-_pg.font.SysFont = lambda *a, **k: None
-sys.modules["pygame"] = _pg
-sys.modules["pygame.display"] = _pg.display
-sys.modules["pygame.font"] = _pg.font
+from agv_simulation.pygame_stub import install
 
-from agv_simulation import run_headless
+install()
+
+from agv_simulation.headless import run_headless
 
 
 def _init_worker():
     """Pool initializer: ensure pygame is stubbed in each forked process."""
-    _pg2 = types.ModuleType("pygame")
-    _pg2.init = lambda: None
-    _pg2.quit = lambda: None
-    _pg2.display = types.ModuleType("pygame.display")
-    _pg2.display.set_mode = lambda *a, **k: None
-    _pg2.display.set_caption = lambda *a, **k: None
-    _pg2.font = types.ModuleType("pygame.font")
-    _pg2.font.SysFont = lambda *a, **k: None
-    sys.modules["pygame"] = _pg2
-    sys.modules["pygame.display"] = _pg2.display
-    sys.modules["pygame.font"] = _pg2.font
+    from agv_simulation.pygame_stub import install as _install
+
+    _install()
 
 
 def _run_single(args):
@@ -122,10 +102,8 @@ def main():
             print(f"  Orders={result['completed_orders']:>4}  "
                   f"Wall={result['wall_clock_seconds']:.1f}s")
 
-    # Sort results by AGVs then carts for display
     results.sort(key=lambda r: (r["num_agvs"], r["num_carts"]))
 
-    # Print summary table
     print()
     header = f"{'AGVs':>5}  {'Carts':>5}  {'Orders':>6}  {'Ord/hr':>6}  " \
              f"{'AvgCycle':>9}  {'Util%':>6}  {'Block%':>7}  {'Wall(s)':>8}"
@@ -149,7 +127,6 @@ def main():
         print(f"\nBest throughput: {best['orders_per_hour']:.1f} orders/hr "
               f"with {best['num_agvs']} AGVs, {best['num_carts']} carts")
 
-    # Write CSV if requested
     if args.csv:
         fieldnames = [
             "num_agvs", "num_carts", "completed_orders", "orders_per_hour",

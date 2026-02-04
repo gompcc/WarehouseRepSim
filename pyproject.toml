@@ -1,0 +1,11 @@
+[project]
+name = "agv-warehouse-simulation"
+version = "1.0.0"
+requires-python = ">=3.10"
+dependencies = ["pygame>=2.0.0"]
+
+[project.optional-dependencies]
+dev = ["pytest>=7.0.0"]
+
+[project.scripts]
+agv-sim = "agv_simulation.__main__:main"
