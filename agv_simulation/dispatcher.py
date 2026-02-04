@@ -126,6 +126,8 @@ class Dispatcher:
         for pos, tile in tiles.items():
             if tile.tile_type != TileType.PARKING:
                 continue
+            if tile.station_id is not None:
+                continue  # skip station-associated parking (Box Depot, Pack-off)
             if pos in reserved:
                 continue
             dist = abs(pos[0] - near_pos[0]) + abs(pos[1] - near_pos[1])
@@ -285,7 +287,8 @@ class Dispatcher:
                 key=lambda a: abs(a.pos[0] - job.cart.pos[0]) + abs(a.pos[1] - job.cart.pos[1]),
             )
             dist = abs(best_agv.pos[0] - job.cart.pos[0]) + abs(best_agv.pos[1] - job.cart.pos[1])
-            if best_agv.pickup_cart(job.cart, graph, tiles):
+            blocked = {a.pos for a in agvs if a is not best_agv}
+            if best_agv.pickup_cart(job.cart, graph, tiles, blocked=blocked):
                 job.assigned_agv = best_agv
                 best_agv.current_job = job
                 self.active_jobs.append(job)
@@ -372,6 +375,7 @@ class Dispatcher:
 
     def _progress_jobs(
         self,
+        agvs: list[AGV],
         graph: dict[tuple[int, int], set[tuple[int, int]]],
         tiles: dict[tuple[int, int], Tile],
     ) -> None:
@@ -387,7 +391,8 @@ class Dispatcher:
                 and agv.carrying_cart is job.cart
             ):
                 self._set_transit_state(job)
-                if agv.start_dropoff(job.target_pos, graph, tiles):
+                blocked = {a.pos for a in agvs if a is not agv}
+                if agv.start_dropoff(job.target_pos, graph, tiles, blocked=blocked):
                     logger.info(
                         "[Dispatcher] AGV %d carrying C%d → %s (%d tiles)",
                         agv.agv_id, job.cart.cart_id,
@@ -489,6 +494,8 @@ class Dispatcher:
                 best_dist = float("inf")
                 for pos, tile in tiles.items():
                     if tile.tile_type in (TileType.PARKING, TileType.AGV_SPAWN):
+                        if tile.station_id is not None:
+                            continue  # skip station-associated parking
                         if pos not in agv_positions:
                             d = abs(pos[0] - blocker.pos[0]) + abs(pos[1] - blocker.pos[1])
                             if d < best_dist:
@@ -507,22 +514,20 @@ class Dispatcher:
                 blocker
                 and not blocker.is_blocked
                 and blocker.state not in (AGVState.IDLE,)
-                and agv.blocked_timer < BLOCK_TIMEOUT * 3
+                and agv.blocked_timer < BLOCK_TIMEOUT * 2
             ):
                 continue
 
-            agv.last_reroute += agv.blocked_timer
-            if agv.last_reroute < REROUTE_COOLDOWN:
+            if agv.blocked_timer - agv.last_reroute < REROUTE_COOLDOWN:
                 continue
             if agv.reroute(graph, agvs, tiles):
-                agv.last_reroute = 0.0
+                agv.last_reroute = agv.blocked_timer
                 logger.info(
                     "[Collision] AGV %d re-routed (%d tiles)",
                     agv.agv_id, len(agv.path),
                 )
             else:
-                agv.blocked_timer = 0.0
-                agv.last_reroute = 0.0
+                agv.last_reroute = agv.blocked_timer
 
     def _park_idle_agvs(
         self,
@@ -548,6 +553,8 @@ class Dispatcher:
             for pos, t in tiles.items():
                 if t.tile_type not in (TileType.PARKING, TileType.AGV_SPAWN):
                     continue
+                if t.station_id is not None:
+                    continue  # skip station-associated parking
                 if pos in agv_positions:
                     continue
                 d = abs(pos[0] - agv.pos[0]) + abs(pos[1] - agv.pos[1])
@@ -580,7 +587,7 @@ class Dispatcher:
         self._cancel_stuck_jobs(agvs, carts, graph, tiles)
         self._create_jobs(carts, graph, tiles)
         self._assign_jobs(agvs, graph, tiles)
-        self._progress_jobs(graph, tiles)
+        self._progress_jobs(agvs, graph, tiles)
         self._handle_blocked_agvs(agvs, graph, tiles)
         self._park_idle_agvs(agvs, graph, tiles)
 

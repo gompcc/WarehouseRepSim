@@ -44,9 +44,10 @@ class AGV:
         goal: tuple[int, int],
         graph: dict[tuple[int, int], set[tuple[int, int]]],
         tiles: dict[tuple[int, int], Tile],
+        blocked: set[tuple[int, int]] | None = None,
     ) -> bool:
         """Plan a path to *goal*. Returns ``True`` if a path was found."""
-        route = astar(graph, self.pos, goal, tiles=tiles)
+        route = astar(graph, self.pos, goal, blocked=blocked, tiles=tiles)
         if route is None:
             return False
         self.path = route
@@ -77,9 +78,10 @@ class AGV:
         cart: Cart,
         graph: dict[tuple[int, int], set[tuple[int, int]]],
         tiles: dict[tuple[int, int], Tile],
+        blocked: set[tuple[int, int]] | None = None,
     ) -> bool:
         """Pathfind to *cart*'s position, then pick it up. Returns ``True`` if a path was found."""
-        route = astar(graph, self.pos, cart.pos, tiles=tiles)
+        route = astar(graph, self.pos, cart.pos, blocked=blocked, tiles=tiles)
         if route is None:
             return False
         self.path = route
@@ -95,9 +97,10 @@ class AGV:
         goal: tuple[int, int],
         graph: dict[tuple[int, int], set[tuple[int, int]]],
         tiles: dict[tuple[int, int], Tile],
+        blocked: set[tuple[int, int]] | None = None,
     ) -> bool:
         """Pathfind to *goal* while carrying a cart. Returns ``True`` if a path was found."""
-        route = astar(graph, self.pos, goal, tiles=tiles)
+        route = astar(graph, self.pos, goal, blocked=blocked, tiles=tiles)
         if route is None:
             return False
         self.path = route
@@ -113,11 +116,17 @@ class AGV:
         agvs: list[AGV],
         tiles: dict[tuple[int, int], Tile] | None = None,
     ) -> bool:
-        """Re-plan path avoiding tiles occupied by other AGVs."""
+        """Re-plan path avoiding tiles occupied by or targeted by other AGVs."""
         goal = self.target or (self.path[-1] if self.path else None)
         if goal is None:
             return False
-        blocked = {a.pos for a in agvs if a is not self}
+        blocked: set[tuple[int, int]] = set()
+        for a in agvs:
+            if a is not self:
+                blocked.add(a.pos)
+                # Also block their next tile to prevent head-on routing
+                if a.path and a.path_index < len(a.path) - 1:
+                    blocked.add(a.path[a.path_index + 1])
         route = astar(graph, self.pos, goal, blocked=blocked, tiles=tiles)
         if route is None:
             return False
@@ -174,6 +183,9 @@ class AGV:
         if self.state == AGVState.IDLE or not self.path:
             return
 
+        # Allow one reroute attempt per tick (clear flag from previous tick)
+        self._just_rerouted = False
+
         self.path_progress += AGV_SPEED * dt
 
         while self.path_progress >= 1.0 and self.path_index < len(self.path) - 1:
@@ -198,7 +210,12 @@ class AGV:
                         break
             if occupied:
                 if graph and not self._just_rerouted:
-                    blocked_tiles = {a.pos for a in agvs if a is not self}
+                    blocked_tiles: set[tuple[int, int]] = set()
+                    for a in agvs:
+                        if a is not self:
+                            blocked_tiles.add(a.pos)
+                            if a.path and a.path_index < len(a.path) - 1:
+                                blocked_tiles.add(a.path[a.path_index + 1])
                     alt = astar(
                         graph,
                         self.pos,
