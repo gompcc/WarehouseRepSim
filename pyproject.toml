@@ -9,3 +9,8 @@ dev = ["pytest>=7.0.0"]
 
 [project.scripts]
 agv-sim = "agv_simulation.__main__:main"
+
+[tool.pytest.ini_options]
+markers = [
+    "slow: marks tests as slow (deselect with '-m \"not slow\"')",
+]

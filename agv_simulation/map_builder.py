@@ -262,24 +262,50 @@ def verify_graph(
     graph: dict[tuple[int, int], set[tuple[int, int]]],
     tiles: dict[tuple[int, int], Tile],
 ) -> None:
-    """Log graph stats and test a few key paths at startup."""
+    """Log graph stats and verify reachability for all stations at startup."""
     logger.info("--- Graph verification ---")
     logger.info("Graph nodes: %d", len(graph))
     total_edges = sum(len(v) for v in graph.values())
     logger.info("Graph edges: %d", total_edges)
 
-    tests = [
-        ("Spawn → S1 pick (8,12)", AGV_SPAWN_TILE, (8, 12)),
-        ("Spawn → S5 pick (39,35)", AGV_SPAWN_TILE, (39, 35)),
-        ("S1 pick (8,12) → Spawn (return)", (8, 12), AGV_SPAWN_TILE),
-    ]
-    for desc, start, goal in tests:
-        path = astar(graph, start, goal, tiles=tiles)
-        if path:
+    # Collect one representative tile per station
+    station_tiles: dict[str, tuple[int, int]] = {}
+    for pos, tile in tiles.items():
+        if tile.station_id and tile.station_id not in station_tiles:
+            station_tiles[tile.station_id] = pos
+
+    failures = 0
+    for station_id, station_pos in sorted(station_tiles.items()):
+        # Test spawn → station
+        path_to = astar(graph, AGV_SPAWN_TILE, station_pos, tiles=tiles)
+        if path_to:
             logger.info(
-                "  %s: %d tiles, ~%.0fs",
-                desc, len(path), len(path) * TILE_TRAVEL_TIME,
+                "  Spawn → %s %s: %d tiles, ~%.0fs",
+                station_id, station_pos, len(path_to),
+                len(path_to) * TILE_TRAVEL_TIME,
             )
         else:
-            logger.info("  %s: NO PATH FOUND!", desc)
+            logger.critical(
+                "  Spawn → %s %s: NO PATH FOUND!", station_id, station_pos,
+            )
+            failures += 1
+
+        # Test station → spawn
+        path_back = astar(graph, station_pos, AGV_SPAWN_TILE, tiles=tiles)
+        if path_back:
+            logger.info(
+                "  %s %s → Spawn: %d tiles, ~%.0fs",
+                station_id, station_pos, len(path_back),
+                len(path_back) * TILE_TRAVEL_TIME,
+            )
+        else:
+            logger.critical(
+                "  %s %s → Spawn: NO PATH FOUND!", station_id, station_pos,
+            )
+            failures += 1
+
+    if failures:
+        logger.critical("Graph verification FAILED: %d unreachable paths", failures)
+    else:
+        logger.info("All %d stations reachable (both directions)", len(station_tiles))
     logger.info("--- End verification ---")

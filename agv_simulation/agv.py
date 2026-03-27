@@ -35,9 +35,63 @@ class AGV:
         self.action_timer: float = 0.0
         self.current_job = None  # Job instance managed by Dispatcher
         self.blocked_timer: float = 0.0
-        self.last_reroute: float = 0.0
+        self.last_reroute: float = 0.0  # kept for backward compat; see _reroute_cooldown
+        self._reroute_cooldown: float = 0.0
         self.is_blocked: bool = False
         self._just_rerouted: bool = False
+
+    def _arrive(self) -> None:
+        """Reset navigation state upon reaching the destination."""
+        self.pos = self.path[-1]
+        self.path = []
+        self.path_index = 0
+        self.path_progress = 0.0
+        self.target = None
+        self.is_blocked = False
+        self.blocked_timer = 0.0
+        self._reroute_cooldown = 0.0
+        self._just_rerouted = False
+        if self.carrying_cart and self.carrying_cart.state == CartState.IN_TRANSIT:
+            self.carrying_cart.pos = self.pos
+
+    def reset_navigation(self) -> None:
+        """Clear all path and navigation state, returning AGV to idle."""
+        self.path = []
+        self.path_index = 0
+        self.path_progress = 0.0
+        self.target = None
+        self.is_blocked = False
+        self.blocked_timer = 0.0
+        self._reroute_cooldown = 0.0
+        self._just_rerouted = False
+        self.state = AGVState.IDLE
+        self.current_job = None
+
+    @property
+    def next_tile(self) -> tuple[int, int] | None:
+        """Return the next tile on the path, or ``None`` if at end or no path."""
+        if self.path and self.path_index < len(self.path) - 1:
+            return self.path[self.path_index + 1]
+        return None
+
+    def clear_blocked(self) -> None:
+        """Clear the blocked state and reset timers."""
+        self.is_blocked = False
+        self.blocked_timer = 0.0
+
+    def _set_path(
+        self,
+        route: list[tuple[int, int]],
+        goal: tuple[int, int],
+        state: AGVState,
+    ) -> bool:
+        """Apply a computed *route* and transition to *state*. Returns ``True``."""
+        self.path = route
+        self.path_index = 0
+        self.path_progress = 0.0
+        self.target = goal
+        self.state = state
+        return True
 
     def set_destination(
         self,
@@ -50,12 +104,7 @@ class AGV:
         route = astar(graph, self.pos, goal, blocked=blocked, tiles=tiles)
         if route is None:
             return False
-        self.path = route
-        self.path_index = 0
-        self.path_progress = 0.0
-        self.target = goal
-        self.state = AGVState.MOVING
-        return True
+        return self._set_path(route, goal, AGVState.MOVING)
 
     def return_to_spawn(
         self,
@@ -66,12 +115,7 @@ class AGV:
         route = astar(graph, self.pos, AGV_SPAWN_TILE, tiles=tiles)
         if route is None:
             return False
-        self.path = route
-        self.path_index = 0
-        self.path_progress = 0.0
-        self.target = AGV_SPAWN_TILE
-        self.state = AGVState.RETURNING_TO_SPAWN
-        return True
+        return self._set_path(route, AGV_SPAWN_TILE, AGVState.RETURNING_TO_SPAWN)
 
     def pickup_cart(
         self,
@@ -84,13 +128,8 @@ class AGV:
         route = astar(graph, self.pos, cart.pos, blocked=blocked, tiles=tiles)
         if route is None:
             return False
-        self.path = route
-        self.path_index = 0
-        self.path_progress = 0.0
-        self.target = cart.pos
         self.carrying_cart = cart
-        self.state = AGVState.MOVING_TO_PICKUP
-        return True
+        return self._set_path(route, cart.pos, AGVState.MOVING_TO_PICKUP)
 
     def start_dropoff(
         self,
@@ -103,12 +142,7 @@ class AGV:
         route = astar(graph, self.pos, goal, blocked=blocked, tiles=tiles)
         if route is None:
             return False
-        self.path = route
-        self.path_index = 0
-        self.path_progress = 0.0
-        self.target = goal
-        self.state = AGVState.MOVING_TO_DROPOFF
-        return True
+        return self._set_path(route, goal, AGVState.MOVING_TO_DROPOFF)
 
     def reroute(
         self,
@@ -129,20 +163,26 @@ class AGV:
                     blocked.add(a.path[a.path_index + 1])
         route = astar(graph, self.pos, goal, blocked=blocked, tiles=tiles)
         if route is None:
+            logger.debug(
+                "AGV %d reroute failed: no path to %s (%d blocked tiles)",
+                self.agv_id, goal, len(blocked),
+            )
             return False
-        old_next = (
-            self.path[self.path_index + 1]
-            if self.path and self.path_index < len(self.path) - 1
-            else None
-        )
-        new_next = route[1] if len(route) > 1 else None
-        if old_next and new_next and old_next == new_next:
+        remaining = self.path[self.path_index:]
+        if route == remaining:
+            logger.warning(
+                "AGV %d reroute rejected: identical path toward %s",
+                self.agv_id, goal,
+            )
             return False
         self.path = route
         self.path_index = 0
         self.path_progress = 0.0
         self.blocked_timer = 0.0
         self.is_blocked = False
+        logger.debug(
+            "AGV %d rerouted: %d tiles toward %s", self.agv_id, len(route), goal,
+        )
         return True
 
     def update(
@@ -185,6 +225,8 @@ class AGV:
 
         # Allow one reroute attempt per tick (clear flag from previous tick)
         self._just_rerouted = False
+        if self._reroute_cooldown > 0:
+            self._reroute_cooldown = max(0.0, self._reroute_cooldown - dt)
 
         self.path_progress += AGV_SPEED * dt
 
@@ -209,32 +251,22 @@ class AGV:
                         occupied = True
                         break
             if occupied:
+                logger.debug(
+                    "AGV %d blocked at %s, cannot enter %s",
+                    self.agv_id, self.pos, next_tile,
+                )
                 if graph and not self._just_rerouted:
-                    blocked_tiles: set[tuple[int, int]] = set()
-                    for a in agvs:
-                        if a is not self:
-                            blocked_tiles.add(a.pos)
-                            if a.path and a.path_index < len(a.path) - 1:
-                                blocked_tiles.add(a.path[a.path_index + 1])
-                    alt = astar(
-                        graph,
-                        self.pos,
-                        self.target or self.path[-1],
-                        blocked=blocked_tiles,
-                        tiles=tiles,
-                    )
-                    if alt and len(alt) > 1:
-                        if alt[1] != next_tile:
-                            self.path = alt
-                            self.path_index = 0
-                            self.path_progress = min(self.path_progress, 0.99)
-                            self._just_rerouted = True
-                            self.is_blocked = False
-                            self.blocked_timer = 0.0
-                            continue
-                self.path_progress = 0.99
+                    if self.reroute(graph, agvs, tiles=tiles):
+                        self._just_rerouted = True
+                        self.path_progress = 0.0
+                        break  # defer movement to next tick
+                self.path_progress = 0.0
                 self.is_blocked = True
                 self.blocked_timer += dt
+                logger.warning(
+                    "AGV %d stuck at %s (%.1fs blocked)",
+                    self.agv_id, self.pos, self.blocked_timer,
+                )
                 return
 
             # --- clear to advance ---
@@ -249,16 +281,7 @@ class AGV:
 
         # Arrived at destination?
         if self.path_index >= len(self.path) - 1:
-            self.pos = self.path[-1]
-            self.path_progress = 0.0
-            self.target = None
-            self.path = []
-            self.path_index = 0
-            self.is_blocked = False
-            self.blocked_timer = 0.0
-            self._just_rerouted = False
-            if self.carrying_cart and self.carrying_cart.state == CartState.IN_TRANSIT:
-                self.carrying_cart.pos = self.pos
+            self._arrive()
 
             if self.state == AGVState.MOVING_TO_PICKUP:
                 self.state = AGVState.PICKING_UP

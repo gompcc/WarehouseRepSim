@@ -431,14 +431,7 @@ class Dispatcher:
 
             # Case 1: stuck heading to pickup (not carrying yet) — cancel and re-queue
             if agv.carrying_cart is None and agv.state == AGVState.MOVING_TO_PICKUP:
-                agv.current_job = None
-                agv.state = AGVState.IDLE
-                agv.path = []
-                agv.path_index = 0
-                agv.path_progress = 0.0
-                agv.target = None
-                agv.is_blocked = False
-                agv.blocked_timer = 0.0
+                agv.reset_navigation()
                 if job in self.active_jobs:
                     self.active_jobs.remove(job)
                 job.assigned_agv = None
@@ -457,8 +450,7 @@ class Dispatcher:
                 if buffer and agv.start_dropoff(buffer, graph, tiles):
                     job.target_pos = buffer
                     job.job_type = JobType.MOVE_TO_BUFFER
-                    agv.blocked_timer = 0.0
-                    agv.is_blocked = False
+                    agv.clear_blocked()
                     logger.info(
                         "[Dispatcher] Retargeted stuck AGV %d → buffer %s",
                         agv.agv_id, buffer,
@@ -476,10 +468,10 @@ class Dispatcher:
                 continue
 
             blocker = None
-            if agv.path and agv.path_index < len(agv.path) - 1:
-                next_tile = agv.path[agv.path_index + 1]
+            blocked_tile = agv.next_tile
+            if blocked_tile is not None:
                 for other in agvs:
-                    if other is not agv and other.pos == next_tile:
+                    if other is not agv and other.pos == blocked_tile:
                         blocker = other
                         break
 
@@ -506,7 +498,7 @@ class Dispatcher:
                         "[Collision] Nudged idle AGV %d from %s → %s",
                         blocker.agv_id, blocker.pos, best_tile,
                     )
-                    agv.blocked_timer = 0.0
+                    agv.clear_blocked()
                 continue
 
             # If blocker is actively moving (not itself stuck), wait briefly
@@ -518,16 +510,16 @@ class Dispatcher:
             ):
                 continue
 
-            if agv.blocked_timer - agv.last_reroute < REROUTE_COOLDOWN:
+            if agv._reroute_cooldown > 0:
                 continue
             if agv.reroute(graph, agvs, tiles):
-                agv.last_reroute = agv.blocked_timer
+                agv._reroute_cooldown = REROUTE_COOLDOWN
                 logger.info(
                     "[Collision] AGV %d re-routed (%d tiles)",
                     agv.agv_id, len(agv.path),
                 )
             else:
-                agv.last_reroute = agv.blocked_timer
+                agv._reroute_cooldown = REROUTE_COOLDOWN
 
     def _park_idle_agvs(
         self,
