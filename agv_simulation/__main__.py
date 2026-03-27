@@ -66,10 +66,16 @@ def main() -> None:
     auto_spawn: bool = False
     auto_spawn_timer: float = 0.0
     sim_elapsed: float = 0.0
+    # Spawn cooldowns prevent pile-ups when keys are pressed rapidly
+    SPAWN_COOLDOWN = 1.0  # seconds (real-time)
+    agv_spawn_cooldown: float = 0.0
+    cart_spawn_cooldown: float = 0.0
 
     running = True
     while running:
         dt = clock.tick(FPS) / 1000.0
+        agv_spawn_cooldown = max(0.0, agv_spawn_cooldown - dt)
+        cart_spawn_cooldown = max(0.0, cart_spawn_cooldown - dt)
 
         for event in pygame.event.get():
             if event.type == pygame.QUIT:
@@ -99,26 +105,33 @@ def main() -> None:
                     logger.info("Auto-spawn: %s", "ON" if auto_spawn else "OFF")
 
                 elif event.key == pygame.K_a:
-                    if any(a.pos == AGV_SPAWN_TILE for a in agvs):
+                    if agv_spawn_cooldown > 0:
+                        logger.info("AGV spawn on cooldown (%.1fs)", agv_spawn_cooldown)
+                    elif any(a.pos == AGV_SPAWN_TILE for a in agvs):
                         logger.info("Cannot spawn: spawn tile occupied by another AGV!")
                     else:
                         new_agv = AGV(AGV_SPAWN_TILE)
                         agvs.append(new_agv)
                         selected_agv = new_agv
+                        agv_spawn_cooldown = SPAWN_COOLDOWN
                         logger.info("Spawned AGV %d at %s", new_agv.agv_id, AGV_SPAWN_TILE)
 
                 elif event.key == pygame.K_c:
-                    occupied = {c.pos for c in carts if c.carried_by is None}
-                    spawned = False
-                    for spawn_pos in CART_SPAWN_TILES:
-                        if spawn_pos not in occupied:
-                            new_cart = Cart(spawn_pos)
-                            carts.append(new_cart)
-                            logger.info("Spawned Cart C%d at %s", new_cart.cart_id, spawn_pos)
-                            spawned = True
-                            break
-                    if not spawned:
-                        logger.info("All cart spawn tiles occupied!")
+                    if cart_spawn_cooldown > 0:
+                        logger.info("Cart spawn on cooldown (%.1fs)", cart_spawn_cooldown)
+                    else:
+                        occupied = {c.pos for c in carts if c.carried_by is None}
+                        spawned = False
+                        for spawn_pos in CART_SPAWN_TILES:
+                            if spawn_pos not in occupied:
+                                new_cart = Cart(spawn_pos)
+                                carts.append(new_cart)
+                                cart_spawn_cooldown = SPAWN_COOLDOWN
+                                logger.info("Spawned Cart C%d at %s", new_cart.cart_id, spawn_pos)
+                                spawned = True
+                                break
+                        if not spawned:
+                            logger.info("All cart spawn tiles occupied!")
 
                 elif event.key == pygame.K_p:
                     if selected_agv and selected_agv.current_job:
