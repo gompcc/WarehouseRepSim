@@ -60,7 +60,7 @@ CART_COLOR_IDLE       = (80, 140, 255)   # blue
 
 BOX_DEPOT_TIME     = 45.0   # seconds processing at box depot
 PICK_TIME_PER_ITEM = 90.0   # seconds per item at pick station
-PACKOFF_TIME       = 60.0   # seconds processing at pack-off
+PACKOFF_TIME       = 20.0   # seconds processing at pack-off
 CART_COLOR_PROCESSING = (255, 165, 0)   # orange
 CART_COLOR_WAITING    = (180, 100, 255) # purple — buffered, waiting for station
 CART_COLOR_COMPLETED  = (200, 50, 50)   # red

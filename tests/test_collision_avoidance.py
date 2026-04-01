@@ -462,6 +462,63 @@ def test_find_alt_tile_for_pick_station():
     assert result == s1_tiles[4]  # only free tile
 
 
+def test_retarget_cap_drops_cart_after_3():
+    """After 3 retargets, AGV should drop the cart and free itself."""
+    tiles = build_map()
+    graph = build_graph(tiles)
+    dispatcher = Dispatcher(tiles)
+    cart = Cart((9, 20))
+    cart.state = CartState.IN_TRANSIT
+    agv = AGV((9, 20))
+    agv.carrying_cart = cart
+    cart.carried_by = agv
+    agv.state = AGVState.MOVING_TO_DROPOFF
+    agv.is_blocked = True
+    agv.blocked_timer = 60.0
+    agv.path = [(9, 20), (9, 21)]
+    agv.path_index = 0
+    job = Job(JobType.MOVE_TO_BUFFER, cart, (10, 20))
+    job.assigned_agv = agv
+    job.retarget_count = 3  # already at limit
+    agv.current_job = job
+    dispatcher.active_jobs.append(job)
+    dispatcher._cancel_stuck_jobs([agv], [cart], graph, tiles)
+    # AGV should have dropped the cart
+    assert agv.state == AGVState.IDLE
+    assert agv.carrying_cart is None
+    assert cart.state == CartState.WAITING_FOR_STATION
+    assert cart.carried_by is None
+
+
+def test_packoff_capacity_check_uses_physical_occupancy():
+    """WAITING_FOR_STATION carts should only dispatch to pack-off when physically free."""
+    tiles = build_map()
+    graph = build_graph(tiles)
+    dispatcher = Dispatcher(tiles)
+    packoff_tiles = dispatcher._station_tiles.get(("Pack_off", TileType.PARKING), [])
+    # Fill all 4 pack-off tiles physically
+    carts = []
+    for pos in packoff_tiles:
+        c = Cart(pos)
+        c.state = CartState.AT_PACKOFF
+        c.carried_by = None
+        c.process_timer = 10.0
+        carts.append(c)
+    # Create a waiting cart that wants pack-off
+    waiting = Cart((8, 9))
+    waiting.state = CartState.WAITING_FOR_STATION
+    from agv_simulation.models import Order
+    waiting.order = Order()
+    waiting.order.stations_to_visit = []
+    waiting.order.completed_stations = []
+    waiting.order.picks = []
+    carts.append(waiting)
+    dispatcher._create_jobs(carts, graph, tiles)
+    # No MOVE_TO_PACKOFF job should be created (pack-off physically full)
+    packoff_jobs = [j for j in dispatcher.pending_jobs if j.job_type == JobType.MOVE_TO_PACKOFF]
+    assert len(packoff_jobs) == 0
+
+
 def test_find_alt_tile_returns_none_when_full():
     """_find_alt_tile returns None when all station tiles are occupied."""
     tiles = build_map()

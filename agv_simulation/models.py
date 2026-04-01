@@ -24,19 +24,14 @@ class Cart:
         self.carried_by = None  # AGV instance or None
         self.order: Order | None = None
         self.process_timer: float = 0.0
-        self.buffer_cooldown: float = 0.0  # sim-seconds before re-dispatch after buffering
 
     def update(self, dt: float) -> None:
-        """Decrement process_timer and buffer_cooldown."""
+        """Decrement process_timer when at a processing station."""
         if self.state in (CartState.AT_BOX_DEPOT, CartState.PICKING, CartState.AT_PACKOFF):
             if self.process_timer > 0:
                 self.process_timer -= dt
                 if self.process_timer < 0:
                     self.process_timer = 0.0
-        if self.buffer_cooldown > 0:
-            self.buffer_cooldown -= dt
-            if self.buffer_cooldown < 0:
-                self.buffer_cooldown = 0.0
 
     def get_color(self) -> tuple[int, int, int]:
         """Return the RGB color for this cart's current state."""
@@ -110,6 +105,7 @@ class Job:
         self.station_id: str | None = station_id
         self.assigned_agv = None
         self.failed_agvs: set[int] = set()  # AGV IDs that failed this job
+        self.retarget_count: int = 0
 
 
 # Station capacities
