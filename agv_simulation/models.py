@@ -106,6 +106,7 @@ class Job:
         self.assigned_agv = None
         self.dispatch_attempts: int = 0
         self.last_dispatch_attempt: float = 0.0
+        self.failed_agvs: set[int] = set()  # AGV IDs that failed this job
 
 
 # Station capacities

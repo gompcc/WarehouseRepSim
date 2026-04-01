@@ -286,8 +286,12 @@ class Dispatcher:
         for job in self.pending_jobs:
             if not free_agvs or len(assigned) >= slots:
                 break
+            # Skip AGVs that already failed this job
+            candidates = [a for a in free_agvs if a.agv_id not in job.failed_agvs]
+            if not candidates:
+                candidates = free_agvs  # all failed — retry anyway
             best_agv = min(
-                free_agvs,
+                candidates,
                 key=lambda a: abs(a.pos[0] - job.cart.pos[0]) + abs(a.pos[1] - job.cart.pos[1]),
             )
             dist = abs(best_agv.pos[0] - job.cart.pos[0]) + abs(best_agv.pos[1] - job.cart.pos[1])
@@ -512,6 +516,7 @@ class Dispatcher:
                 if job in self.active_jobs:
                     self.active_jobs.remove(job)
                 job.assigned_agv = None
+                job.failed_agvs.add(agv.agv_id)
                 self.pending_jobs.append(job)
                 logger.info(
                     "[Dispatcher] Cancelled stuck Job #%d (AGV %d) — re-queued",
