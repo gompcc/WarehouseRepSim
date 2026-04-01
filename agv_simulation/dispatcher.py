@@ -235,6 +235,8 @@ class Dispatcher:
                     self.pending_jobs.append(job)
 
             elif cart.state == CartState.WAITING_FOR_STATION and cart.carried_by is None:
+                if cart.buffer_cooldown > 0:
+                    continue  # wait for cooldown before re-dispatch
                 if cart.order:
                     remaining = [
                         s for s in cart.order.stations_to_visit
@@ -354,8 +356,9 @@ class Dispatcher:
 
         elif job.job_type == JobType.MOVE_TO_BUFFER:
             cart.state = CartState.WAITING_FOR_STATION
+            cart.buffer_cooldown = 30.0  # wait before re-dispatch
             logger.info(
-                "[Dispatcher] C%d buffered at %s — waiting for station",
+                "[Dispatcher] C%d buffered at %s — waiting 30s",
                 cart.cart_id, cart.pos,
             )
 
