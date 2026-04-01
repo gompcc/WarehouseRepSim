@@ -287,6 +287,15 @@ class Dispatcher:
                     job = Job(JobType.RETURN_TO_BOX_DEPOT, cart, target)
                     self.pending_jobs.append(job)
 
+    # Priority: complete-cycle jobs first (frees carts for reuse)
+    _JOB_PRIORITY = {
+        JobType.RETURN_TO_BOX_DEPOT: 0,  # completes order cycle → cart recycled
+        JobType.MOVE_TO_PACKOFF: 1,      # near completion
+        JobType.MOVE_TO_PICK: 2,         # progresses order
+        JobType.PICKUP_TO_BOX_DEPOT: 3,  # starts new cycle
+        JobType.MOVE_TO_BUFFER: 4,       # lowest value, just parking
+    }
+
     def _assign_jobs(
         self,
         agvs: list[AGV],
@@ -305,6 +314,8 @@ class Dispatcher:
             and a.current_job is None
             and a.carrying_cart is None
         ]
+        # Sort pending jobs by lifecycle priority — completion-path jobs first
+        self.pending_jobs.sort(key=lambda j: self._JOB_PRIORITY.get(j.job_type, 99))
         assigned: list[Job] = []
         for job in self.pending_jobs:
             if not free_agvs or len(assigned) >= slots:
