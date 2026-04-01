@@ -9,7 +9,8 @@ from .enums import AGVState, CartState, JobType, TileType
 from .constants import (
     BOX_DEPOT_TIME, PICK_TIME_PER_ITEM, PACKOFF_TIME,
     BLOCK_TIMEOUT, REROUTE_COOLDOWN, JOB_CANCEL_TIMEOUT,
-    MAX_CONCURRENT_DISPATCHES,
+    MAX_CONCURRENT_DISPATCHES, DISPATCH_RETRY_INTERVAL,
+    DISPATCH_BUFFER_THRESHOLD, RETARGET_MIN_DIST,
 )
 from .models import Job, Order, STATIONS
 
@@ -118,6 +119,7 @@ class Dispatcher:
         near_pos: tuple[int, int],
         carts: list[Cart],
         tiles: dict[tuple[int, int], Tile],
+        min_dist: int = 0,
     ) -> tuple[int, int] | None:
         """Find the nearest unoccupied PARKING tile to use as a temporary buffer."""
         reserved = self._reserved_tiles(carts)
@@ -131,7 +133,7 @@ class Dispatcher:
             if pos in reserved:
                 continue
             dist = abs(pos[0] - near_pos[0]) + abs(pos[1] - near_pos[1])
-            if dist < best_dist:
+            if dist >= min_dist and dist < best_dist:
                 best_dist = dist
                 best = pos
         return best
@@ -269,7 +271,9 @@ class Dispatcher:
         tiles: dict[tuple[int, int], Tile],
     ) -> None:
         """Assign pending jobs to free AGVs (capped to prevent highway gridlock)."""
-        slots = MAX_CONCURRENT_DISPATCHES - len(self.active_jobs)
+        # Back off when highway is congested — blocked AGVs gently reduce slots
+        blocked_count = sum(1 for a in agvs if a.is_blocked)
+        slots = MAX_CONCURRENT_DISPATCHES - len(self.active_jobs) - blocked_count // 3
         if slots <= 0:
             return
         free_agvs = [
@@ -277,17 +281,17 @@ class Dispatcher:
             if a.state == AGVState.IDLE
             and a.current_job is None
             and a.carrying_cart is None
-        ][:slots]
+        ]
         assigned: list[Job] = []
         for job in self.pending_jobs:
-            if not free_agvs:
+            if not free_agvs or len(assigned) >= slots:
                 break
             best_agv = min(
                 free_agvs,
                 key=lambda a: abs(a.pos[0] - job.cart.pos[0]) + abs(a.pos[1] - job.cart.pos[1]),
             )
             dist = abs(best_agv.pos[0] - job.cart.pos[0]) + abs(best_agv.pos[1] - job.cart.pos[1])
-            blocked = {a.pos for a in agvs if a is not best_agv}
+            blocked = {a.pos for a in agvs if a is not best_agv and a.state != AGVState.IDLE}
             if best_agv.pickup_cart(job.cart, graph, tiles, blocked=blocked):
                 job.assigned_agv = best_agv
                 best_agv.current_job = job
@@ -373,9 +377,25 @@ class Dispatcher:
         if job in self.active_jobs:
             self.active_jobs.remove(job)
 
+    _ALT_TARGET_MAP = {
+        JobType.PICKUP_TO_BOX_DEPOT: ("Box_Depot", TileType.PARKING),
+        JobType.RETURN_TO_BOX_DEPOT: ("Box_Depot", TileType.PARKING),
+        JobType.MOVE_TO_PACKOFF: ("Pack_off", TileType.PARKING),
+    }
+
+    def _find_alt_target(
+        self, job: Job, carts: list[Cart],
+    ) -> tuple[int, int] | None:
+        """Find any free tile at the same station as *job*'s current target."""
+        if job.job_type == JobType.MOVE_TO_PICK and job.station_id:
+            return self._find_tile(job.station_id, TileType.PICK_STATION, carts)
+        sid_tt = self._ALT_TARGET_MAP.get(job.job_type)
+        return self._find_tile(*sid_tt, carts) if sid_tt else None
+
     def _progress_jobs(
         self,
         agvs: list[AGV],
+        carts: list[Cart],
         graph: dict[tuple[int, int], set[tuple[int, int]]],
         tiles: dict[tuple[int, int], Tile],
     ) -> None:
@@ -390,19 +410,67 @@ class Dispatcher:
                 and agv.carrying_cart is not None
                 and agv.carrying_cart is job.cart
             ):
-                self._set_transit_state(job)
-                blocked = {a.pos for a in agvs if a is not agv}
-                if agv.start_dropoff(job.target_pos, graph, tiles, blocked=blocked):
+                # Throttle retries — don't spam every frame
+                if (
+                    job.dispatch_attempts > 0
+                    and self._sim_elapsed - job.last_dispatch_attempt < DISPATCH_RETRY_INTERVAL
+                ):
+                    continue
+
+                # Only block moving AGVs; idle ones get nudged on contact
+                blocked = {
+                    a.pos for a in agvs
+                    if a is not agv and a.state != AGVState.IDLE
+                }
+
+                success = agv.start_dropoff(
+                    job.target_pos, graph, tiles, blocked=blocked,
+                )
+
+                # Try an alternative tile at the same station
+                alt = None
+                if not success:
+                    alt = self._find_alt_target(job, carts)
+                    if alt and alt != job.target_pos:
+                        if agv.start_dropoff(alt, graph, tiles, blocked=blocked):
+                            job.target_pos = alt
+                            success = True
+
+                # Station full — proactively buffer instead of retrying
+                if (
+                    not success
+                    and job.job_type != JobType.MOVE_TO_BUFFER
+                    and (alt is None or job.dispatch_attempts >= DISPATCH_BUFFER_THRESHOLD)
+                ):
+                    buffer = self._find_buffer_spot(agv.pos, carts, tiles)
+                    if buffer and agv.start_dropoff(
+                        buffer, graph, tiles, blocked=blocked,
+                    ):
+                        job.target_pos = buffer
+                        job.job_type = JobType.MOVE_TO_BUFFER
+                        success = True
+                        logger.info(
+                            "[Dispatcher] AGV %d: station full, buffering C%d → %s",
+                            agv.agv_id, job.cart.cart_id, buffer,
+                        )
+
+                if success:
+                    self._set_transit_state(job)
+                    job.dispatch_attempts = 0
                     logger.info(
                         "[Dispatcher] AGV %d carrying C%d → %s (%d tiles)",
                         agv.agv_id, job.cart.cart_id,
                         job.target_pos, len(agv.path),
                     )
                 else:
-                    logger.info(
-                        "[Dispatcher] AGV %d: no path to %s!",
-                        agv.agv_id, job.target_pos,
-                    )
+                    job.dispatch_attempts += 1
+                    job.last_dispatch_attempt = self._sim_elapsed
+                    n = job.dispatch_attempts
+                    if n <= 3 or n == 5 or n % 10 == 0:
+                        logger.info(
+                            "[Dispatcher] AGV %d: no path to %s (attempt %d)",
+                            agv.agv_id, job.target_pos, n,
+                        )
 
             elif (
                 agv.state == AGVState.IDLE
@@ -429,8 +497,10 @@ class Dispatcher:
 
             job = agv.current_job
 
-            # Case 1: stuck heading to pickup (not carrying yet) — cancel and re-queue
-            if agv.carrying_cart is None and agv.state == AGVState.MOVING_TO_PICKUP:
+            # Case 1: stuck heading to pickup — cancel and re-queue
+            if agv.state == AGVState.MOVING_TO_PICKUP:
+                if agv.carrying_cart:
+                    agv.carrying_cart = None  # release reservation
                 agv.current_job = None
                 agv.state = AGVState.IDLE
                 agv.path = []
@@ -448,13 +518,20 @@ class Dispatcher:
                     job.job_id, agv.agv_id,
                 )
 
-            # Case 2: stuck while carrying a cart — retarget to nearest parking
+            # Case 2: stuck while carrying a cart — retarget to distant parking
             elif (
                 agv.carrying_cart is not None
                 and agv.state == AGVState.MOVING_TO_DROPOFF
             ):
-                buffer = self._find_buffer_spot(agv.pos, carts, tiles)
-                if buffer and agv.start_dropoff(buffer, graph, tiles):
+                blocked = {
+                    a.pos for a in agvs
+                    if a is not agv and a.state != AGVState.IDLE
+                }
+                # Min distance of 5 to avoid ping-ponging to adjacent tiles
+                buffer = self._find_buffer_spot(agv.pos, carts, tiles, min_dist=RETARGET_MIN_DIST)
+                if buffer is None:
+                    buffer = self._find_buffer_spot(agv.pos, carts, tiles)
+                if buffer and agv.start_dropoff(buffer, graph, tiles, blocked=blocked):
                     job.target_pos = buffer
                     job.job_type = JobType.MOVE_TO_BUFFER
                     agv.blocked_timer = 0.0
@@ -587,7 +664,7 @@ class Dispatcher:
         self._cancel_stuck_jobs(agvs, carts, graph, tiles)
         self._create_jobs(carts, graph, tiles)
         self._assign_jobs(agvs, graph, tiles)
-        self._progress_jobs(agvs, graph, tiles)
+        self._progress_jobs(agvs, carts, graph, tiles)
         self._handle_blocked_agvs(agvs, graph, tiles)
         self._park_idle_agvs(agvs, graph, tiles)
 

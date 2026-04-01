@@ -104,6 +104,8 @@ class Job:
         self.target_pos: tuple[int, int] = target_pos
         self.station_id: str | None = station_id
         self.assigned_agv = None
+        self.dispatch_attempts: int = 0
+        self.last_dispatch_attempt: float = 0.0
 
 
 # Station capacities

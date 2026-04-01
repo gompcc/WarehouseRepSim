@@ -18,6 +18,7 @@ from .constants import (
     WINDOW_WIDTH, WINDOW_HEIGHT, MAP_WIDTH,
     FPS, SPEED_STEPS, AUTO_SPAWN_INTERVAL,
     AGV_SPAWN_TILE, CART_SPAWN_TILES, BOX_DEPOT_TIME,
+    PRELOAD_CART_COUNT, PRELOAD_SPAWN_INTERVAL,
 )
 from .models import Cart
 from .agv import AGV
@@ -60,12 +61,27 @@ def main() -> None:
     agvs: list[AGV] = []
     carts: list[Cart] = []
     selected_agv: AGV | None = None
-    time_scale: float = 1.0
-    speed_index: int = 1
+    time_scale: float = SPEED_STEPS[-1]
+    speed_index: int = len(SPEED_STEPS) - 1
     paused: bool = False
     auto_spawn: bool = False
     auto_spawn_timer: float = 0.0
     sim_elapsed: float = 0.0
+
+    # Pre-load 10 AGVs distributed near stations across the map
+    _agv_spots = [
+        (8, 9), (10, 16), (8, 22), (10, 28), (8, 34),
+        (37, 9), (39, 15), (37, 21), (39, 27), (37, 33),
+    ]
+    for pos in _agv_spots:
+        if pos in tiles:
+            agvs.append(AGV(pos))
+    if agvs:
+        selected_agv = agvs[0]
+    # Auto-spawn carts one at a time (25 total, every 5 sim-seconds)
+    auto_spawn = True
+    auto_spawn_remaining = PRELOAD_CART_COUNT
+    logger.info("Pre-loaded %d AGVs, auto-spawning %d carts", len(agvs), auto_spawn_remaining)
 
     running = True
     while running:
@@ -312,15 +328,21 @@ def main() -> None:
 
         # Auto-spawn carts
         if auto_spawn and not paused:
+            interval = PRELOAD_SPAWN_INTERVAL if auto_spawn_remaining > 0 else AUTO_SPAWN_INTERVAL
             auto_spawn_timer += sim_dt
-            if auto_spawn_timer >= AUTO_SPAWN_INTERVAL:
-                auto_spawn_timer -= AUTO_SPAWN_INTERVAL
+            if auto_spawn_timer >= interval:
+                auto_spawn_timer -= interval
                 occupied = {c.pos for c in carts if c.carried_by is None}
                 for spawn_pos in CART_SPAWN_TILES:
                     if spawn_pos not in occupied:
                         new_cart = Cart(spawn_pos)
                         carts.append(new_cart)
                         logger.info("[Auto] Spawned Cart C%d at %s", new_cart.cart_id, spawn_pos)
+                        if auto_spawn_remaining > 0:
+                            auto_spawn_remaining -= 1
+                            if auto_spawn_remaining == 0:
+                                auto_spawn = False
+                                logger.info("[Auto] All pre-load carts spawned — auto-spawn OFF")
                         break
 
         if not paused:

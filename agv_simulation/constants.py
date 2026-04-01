@@ -69,6 +69,14 @@ BLOCK_TIMEOUT    = 3.0   # seconds blocked before attempting re-route
 REROUTE_COOLDOWN = 2.0   # min gap between re-route attempts
 JOB_CANCEL_TIMEOUT = 30.0  # seconds blocked before cancelling a non-carrying job
 MAX_CONCURRENT_DISPATCHES = 12  # max AGVs dispatched at once (prevents highway gridlock)
+DISPATCH_RETRY_INTERVAL   = 3.0  # sim-seconds between "no path" dispatch retries
+DISPATCH_BUFFER_THRESHOLD = 10   # failed attempts before buffering to parking
+RETARGET_MIN_DIST         = 5    # min Manhattan distance for retarget buffer (prevents ping-pong)
+
+# Pre-load defaults
+PRELOAD_AGV_COUNT      = 10
+PRELOAD_CART_COUNT     = 25
+PRELOAD_SPAWN_INTERVAL = 5.0   # sim-seconds between pre-load cart spawns
 
 # ============================================================
 # KEY LAYOUT CONSTANTS  (column / row positions)
