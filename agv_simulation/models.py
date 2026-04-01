@@ -24,6 +24,7 @@ class Cart:
         self.carried_by = None  # AGV instance or None
         self.order: Order | None = None
         self.process_timer: float = 0.0
+        self.times_buffered: int = 0
 
     def update(self, dt: float) -> None:
         """Decrement process_timer when at a processing station."""

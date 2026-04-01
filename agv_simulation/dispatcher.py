@@ -154,7 +154,8 @@ class Dispatcher:
         tiles: dict[tuple[int, int], Tile],
     ) -> None:
         """Check carts and create jobs as needed (capacity-based station routing)."""
-        for cart in carts:
+        # Most-buffered carts get first dibs on station tiles (starvation prevention)
+        for cart in sorted(carts, key=lambda c: -c.times_buffered):
             if self._has_job(cart):
                 continue
 
@@ -362,15 +363,17 @@ class Dispatcher:
 
         elif job.job_type == JobType.MOVE_TO_BUFFER:
             cart.state = CartState.WAITING_FOR_STATION
+            cart.times_buffered += 1
             logger.info(
-                "[Dispatcher] C%d buffered at %s — waiting for station",
-                cart.cart_id, cart.pos,
+                "[Dispatcher] C%d buffered at %s — waiting (buffered %dx)",
+                cart.cart_id, cart.pos, cart.times_buffered,
             )
 
         elif job.job_type == JobType.RETURN_TO_BOX_DEPOT:
             cart.state = CartState.AT_BOX_DEPOT
             cart.process_timer = BOX_DEPOT_TIME
             cart.order = None
+            cart.times_buffered = 0  # reset for new order cycle
             self.completed_orders += 1
             start_t = self.cart_start_times.pop(cart.cart_id, None)
             if start_t is not None:
