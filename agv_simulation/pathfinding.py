@@ -5,6 +5,13 @@ from __future__ import annotations
 import heapq
 
 from .enums import TileType
+from .constants import LEFT_HWY_COL, RIGHT_HWY_COL
+
+# Tiles immediately adjacent to highways can serve as overflow lanes
+_SIDETRACK_COLS = frozenset({
+    LEFT_HWY_COL - 1, LEFT_HWY_COL + 1,   # cols 8, 10
+    RIGHT_HWY_COL - 1, RIGHT_HWY_COL + 1,  # cols 37, 39
+})
 
 
 def astar(
@@ -16,7 +23,8 @@ def astar(
 ) -> list[tuple[int, int]] | None:
     """A* with Manhattan distance heuristic and weighted edge costs.
 
-    Highway tiles cost 1, all other walkable tiles cost 10.
+    Highway tiles cost 1, sidetrack tiles (adjacent to highway) cost 2,
+    all other walkable tiles cost 10.
     Returns list of ``(x, y)`` from *start* to *goal* inclusive, or ``None`` if no path.
     """
     if start not in graph or goal not in graph:
@@ -46,7 +54,12 @@ def astar(
                 continue
             if tiles and neighbor != goal:
                 tile = tiles.get(neighbor)
-                edge_cost = 1 if (tile and tile.tile_type == TileType.HIGHWAY) else 10
+                if tile and tile.tile_type == TileType.HIGHWAY:
+                    edge_cost = 1
+                elif neighbor[0] in _SIDETRACK_COLS and tile and tile.tile_type == TileType.PARKING:
+                    edge_cost = 2  # overflow lane adjacent to highway
+                else:
+                    edge_cost = 10
             else:
                 edge_cost = 1
             tentative_g = g_score[current] + edge_cost
