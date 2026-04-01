@@ -523,11 +523,12 @@ class Dispatcher:
                 and agv.state == AGVState.MOVING_TO_DROPOFF
             ):
                 if job.retarget_count >= 3:
-                    # Give up — drop cart here and free the AGV
+                    # Give up — drop cart at nearest parking and free AGV
                     cart = agv.carrying_cart
+                    drop_pos = self._find_buffer_spot(agv.pos, carts, tiles) or agv.pos
                     cart.state = CartState.WAITING_FOR_STATION
                     cart.carried_by = None
-                    cart.pos = agv.pos
+                    cart.pos = drop_pos
                     agv.carrying_cart = None
                     agv.current_job = None
                     agv.state = AGVState.IDLE
@@ -541,7 +542,7 @@ class Dispatcher:
                         self.active_jobs.remove(job)
                     logger.info(
                         "[Dispatcher] Gave up on AGV %d — dropped C%d at %s",
-                        agv.agv_id, cart.cart_id, agv.pos,
+                        agv.agv_id, cart.cart_id, drop_pos,
                     )
                 else:
                     job.retarget_count += 1
