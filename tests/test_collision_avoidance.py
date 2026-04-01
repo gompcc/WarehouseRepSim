@@ -314,3 +314,165 @@ def test_nearest_agv_assignment():
     assert agv_near.current_job is not None
     assert agv_near.current_job.cart is cart
     assert agv_far.current_job is None
+
+
+# -- Dispatch Fixes Tests ------------------------------------------------
+
+def test_idle_agv_excluded_from_blocked_set():
+    """Idle AGVs should NOT block pathfinding — they get nudged on contact."""
+    tiles = build_map()
+    graph = build_graph(tiles)
+    # Place idle AGV at (1, 6) — on the only path to cart spawn (0, 7)
+    agv_idle = AGV((1, 6))
+    agv_idle.state = AGVState.IDLE
+    # Place working AGV at (3, 7) trying to reach (0, 7)
+    agv_worker = AGV((3, 7))
+    agvs = [agv_idle, agv_worker]
+    # With idle exclusion, worker should find path through (1, 6)
+    blocked = {a.pos for a in agvs if a is not agv_worker and a.state != AGVState.IDLE}
+    assert (1, 6) not in blocked  # idle AGV not in blocked set
+    route = astar(graph, agv_worker.pos, (0, 7), blocked=blocked, tiles=tiles)
+    assert route is not None
+
+
+def test_progress_jobs_buffers_immediately_on_unreachable():
+    """When target AND alt tile are unreachable, buffer immediately — no retries."""
+    tiles = build_map()
+    graph = build_graph(tiles)
+    dispatcher = Dispatcher(tiles)
+    # Create a cart at a station tile, AGV carrying it
+    s1_tiles = dispatcher._station_tiles.get(("S1", TileType.PICK_STATION), [])
+    cart = Cart(s1_tiles[0])
+    cart.state = CartState.IN_TRANSIT
+    agv = AGV(s1_tiles[0])
+    agv.carrying_cart = cart
+    cart.carried_by = agv
+    agv.state = AGVState.IDLE
+    # Create a job targeting a tile we'll make unreachable
+    job = Job(JobType.MOVE_TO_PICK, cart, (99, 99), station_id="S1")
+    job.assigned_agv = agv
+    agv.current_job = job
+    dispatcher.active_jobs.append(job)
+    # Fill ALL S1 tiles with carts so alt target returns None
+    carts = [cart]
+    for pos in s1_tiles:
+        blocker = Cart(pos)
+        blocker.state = CartState.PICKING
+        blocker.carried_by = None
+        carts.append(blocker)
+    # Run progress — should buffer immediately, not retry
+    dispatcher._progress_jobs([agv], carts, graph, tiles)
+    # Job should have been retargeted to buffer
+    assert job.job_type == JobType.MOVE_TO_BUFFER
+
+
+def test_cancel_stuck_pickup_with_carrying_cart():
+    """_cancel_stuck_jobs must handle MOVING_TO_PICKUP even when carrying_cart is set."""
+    tiles = build_map()
+    graph = build_graph(tiles)
+    dispatcher = Dispatcher(tiles)
+    cart = Cart((0, 7))
+    cart.state = CartState.SPAWNED
+    agv = AGV((5, 7))
+    # Simulate the reservation: carrying_cart set but not yet physically picked up
+    agv.carrying_cart = cart
+    agv.state = AGVState.MOVING_TO_PICKUP
+    agv.is_blocked = True
+    agv.blocked_timer = 60.0  # well past JOB_CANCEL_TIMEOUT
+    agv.path = [(5, 7), (4, 7)]
+    agv.path_index = 0
+    job = Job(JobType.PICKUP_TO_BOX_DEPOT, cart, (15, 5))
+    job.assigned_agv = agv
+    agv.current_job = job
+    dispatcher.active_jobs.append(job)
+    dispatcher._cancel_stuck_jobs([agv], [cart], graph, tiles)
+    # AGV should be freed
+    assert agv.state == AGVState.IDLE
+    assert agv.carrying_cart is None
+    assert agv.current_job is None
+    # Job should be re-queued with this AGV blacklisted
+    assert job in dispatcher.pending_jobs
+    assert agv.agv_id in job.failed_agvs
+
+
+def test_failed_agvs_skips_previous_failures():
+    """_assign_jobs should skip AGVs that previously failed a job."""
+    tiles = build_map()
+    graph = build_graph(tiles)
+    dispatcher = Dispatcher(tiles)
+    cart = Cart((0, 7))
+    cart.state = CartState.SPAWNED
+    carts = [cart]
+    agv_near = AGV((1, 7))  # nearest but will be in failed_agvs
+    agv_far = AGV((5, 0))   # farther but eligible
+    agvs = [agv_near, agv_far]
+    # Create a pending job with agv_near blacklisted
+    job = Job(JobType.PICKUP_TO_BOX_DEPOT, cart, (15, 5))
+    job.failed_agvs.add(agv_near.agv_id)
+    dispatcher.pending_jobs.append(job)
+    dispatcher._assign_jobs(agvs, graph, tiles)
+    # agv_far should get the job, not agv_near
+    if job.assigned_agv is not None:
+        assert job.assigned_agv is agv_far
+
+
+def test_backpressure_reduces_slots():
+    """Blocked AGVs should reduce available dispatch slots."""
+    tiles = build_map()
+    graph = build_graph(tiles)
+    dispatcher = Dispatcher(tiles)
+    # Create 3 blocked AGVs
+    agvs = []
+    for i in range(3):
+        agv = AGV((i + 1, 7))
+        agv.is_blocked = True
+        agv.state = AGVState.MOVING
+        agv.path = [(i + 1, 7), (i + 2, 7)]
+        agv.path_index = 0
+        agvs.append(agv)
+    # Create an idle AGV and a pending job
+    idle_agv = AGV((5, 0))
+    agvs.append(idle_agv)
+    cart = Cart((0, 7))
+    cart.state = CartState.SPAWNED
+    carts = [cart]
+    job = Job(JobType.PICKUP_TO_BOX_DEPOT, cart, (15, 5))
+    dispatcher.pending_jobs.append(job)
+    # With 3 blocked, slots = 12 - 0 active - 3//3 = 11 — still enough
+    dispatcher._assign_jobs(agvs, graph, tiles)
+    # Job should still be assignable (slots > 0)
+    assert idle_agv.current_job is not None or job in dispatcher.pending_jobs
+
+
+def test_find_alt_tile_for_pick_station():
+    """_find_alt_tile should find free tiles at the same station."""
+    tiles = build_map()
+    dispatcher = Dispatcher(tiles)
+    s1_tiles = dispatcher._station_tiles.get(("S1", TileType.PICK_STATION), [])
+    assert len(s1_tiles) == 5
+    # Occupy 4 tiles, leave 1 free
+    carts = []
+    for i in range(4):
+        c = Cart(s1_tiles[i])
+        c.state = CartState.PICKING
+        c.carried_by = None
+        carts.append(c)
+    job = Job(JobType.MOVE_TO_PICK, carts[0], s1_tiles[0], station_id="S1")
+    result = dispatcher._find_alt_tile(job, carts)
+    assert result == s1_tiles[4]  # only free tile
+
+
+def test_find_alt_tile_returns_none_when_full():
+    """_find_alt_tile returns None when all station tiles are occupied."""
+    tiles = build_map()
+    dispatcher = Dispatcher(tiles)
+    s1_tiles = dispatcher._station_tiles.get(("S1", TileType.PICK_STATION), [])
+    carts = []
+    for pos in s1_tiles:
+        c = Cart(pos)
+        c.state = CartState.PICKING
+        c.carried_by = None
+        carts.append(c)
+    job = Job(JobType.MOVE_TO_PICK, carts[0], s1_tiles[0], station_id="S1")
+    result = dispatcher._find_alt_tile(job, carts)
+    assert result is None

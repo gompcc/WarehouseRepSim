@@ -9,8 +9,7 @@ from .enums import AGVState, CartState, JobType, TileType
 from .constants import (
     BOX_DEPOT_TIME, PICK_TIME_PER_ITEM, PACKOFF_TIME,
     BLOCK_TIMEOUT, REROUTE_COOLDOWN, JOB_CANCEL_TIMEOUT,
-    MAX_CONCURRENT_DISPATCHES, DISPATCH_RETRY_INTERVAL,
-    DISPATCH_BUFFER_THRESHOLD, RETARGET_MIN_DIST,
+    MAX_CONCURRENT_DISPATCHES,
 )
 from .models import Job, Order, STATIONS
 
@@ -119,7 +118,6 @@ class Dispatcher:
         near_pos: tuple[int, int],
         carts: list[Cart],
         tiles: dict[tuple[int, int], Tile],
-        min_dist: int = 0,
     ) -> tuple[int, int] | None:
         """Find the nearest unoccupied PARKING tile to use as a temporary buffer."""
         reserved = self._reserved_tiles(carts)
@@ -133,7 +131,7 @@ class Dispatcher:
             if pos in reserved:
                 continue
             dist = abs(pos[0] - near_pos[0]) + abs(pos[1] - near_pos[1])
-            if dist >= min_dist and dist < best_dist:
+            if dist < best_dist:
                 best_dist = dist
                 best = pos
         return best
@@ -381,21 +379,6 @@ class Dispatcher:
         if job in self.active_jobs:
             self.active_jobs.remove(job)
 
-    _ALT_TARGET_MAP = {
-        JobType.PICKUP_TO_BOX_DEPOT: ("Box_Depot", TileType.PARKING),
-        JobType.RETURN_TO_BOX_DEPOT: ("Box_Depot", TileType.PARKING),
-        JobType.MOVE_TO_PACKOFF: ("Pack_off", TileType.PARKING),
-    }
-
-    def _find_alt_target(
-        self, job: Job, carts: list[Cart],
-    ) -> tuple[int, int] | None:
-        """Find any free tile at the same station as *job*'s current target."""
-        if job.job_type == JobType.MOVE_TO_PICK and job.station_id:
-            return self._find_tile(job.station_id, TileType.PICK_STATION, carts)
-        sid_tt = self._ALT_TARGET_MAP.get(job.job_type)
-        return self._find_tile(*sid_tt, carts) if sid_tt else None
-
     def _progress_jobs(
         self,
         agvs: list[AGV],
@@ -403,7 +386,18 @@ class Dispatcher:
         graph: dict[tuple[int, int], set[tuple[int, int]]],
         tiles: dict[tuple[int, int], Tile],
     ) -> None:
-        """Monitor active jobs and advance them through phases."""
+        """Monitor active jobs and advance them through phases.
+
+        When an AGV has picked up a cart and is idle, try to dispatch it:
+        1. Try the original target tile
+        2. Try any free tile at the same station
+        3. Buffer to nearest parking (fail fast — no retries)
+        """
+        # Precompute once: positions of all non-idle AGVs
+        non_idle_positions = {
+            a.pos for a in agvs if a.state != AGVState.IDLE
+        }
+
         for job in list(self.active_jobs):
             agv = job.assigned_agv
             if agv is None:
@@ -414,38 +408,23 @@ class Dispatcher:
                 and agv.carrying_cart is not None
                 and agv.carrying_cart is job.cart
             ):
-                # Throttle retries — don't spam every frame
-                if (
-                    job.dispatch_attempts > 0
-                    and self._sim_elapsed - job.last_dispatch_attempt < DISPATCH_RETRY_INTERVAL
-                ):
-                    continue
+                blocked = non_idle_positions - {agv.pos}
 
-                # Only block moving AGVs; idle ones get nudged on contact
-                blocked = {
-                    a.pos for a in agvs
-                    if a is not agv and a.state != AGVState.IDLE
-                }
-
+                # 1. Try original target
                 success = agv.start_dropoff(
                     job.target_pos, graph, tiles, blocked=blocked,
                 )
 
-                # Try an alternative tile at the same station
-                alt = None
+                # 2. Try alternative tile at the same station
                 if not success:
-                    alt = self._find_alt_target(job, carts)
+                    alt = self._find_alt_tile(job, carts)
                     if alt and alt != job.target_pos:
                         if agv.start_dropoff(alt, graph, tiles, blocked=blocked):
                             job.target_pos = alt
                             success = True
 
-                # Station full — proactively buffer instead of retrying
-                if (
-                    not success
-                    and job.job_type != JobType.MOVE_TO_BUFFER
-                    and (alt is None or job.dispatch_attempts >= DISPATCH_BUFFER_THRESHOLD)
-                ):
+                # 3. Buffer immediately if station unreachable
+                if not success and job.job_type != JobType.MOVE_TO_BUFFER:
                     buffer = self._find_buffer_spot(agv.pos, carts, tiles)
                     if buffer and agv.start_dropoff(
                         buffer, graph, tiles, blocked=blocked,
@@ -454,27 +433,17 @@ class Dispatcher:
                         job.job_type = JobType.MOVE_TO_BUFFER
                         success = True
                         logger.info(
-                            "[Dispatcher] AGV %d: station full, buffering C%d → %s",
+                            "[Dispatcher] AGV %d: buffering C%d → %s",
                             agv.agv_id, job.cart.cart_id, buffer,
                         )
 
                 if success:
                     self._set_transit_state(job)
-                    job.dispatch_attempts = 0
                     logger.info(
                         "[Dispatcher] AGV %d carrying C%d → %s (%d tiles)",
                         agv.agv_id, job.cart.cart_id,
                         job.target_pos, len(agv.path),
                     )
-                else:
-                    job.dispatch_attempts += 1
-                    job.last_dispatch_attempt = self._sim_elapsed
-                    n = job.dispatch_attempts
-                    if n <= 3 or n == 5 or n % 10 == 0:
-                        logger.info(
-                            "[Dispatcher] AGV %d: no path to %s (attempt %d)",
-                            agv.agv_id, job.target_pos, n,
-                        )
 
             elif (
                 agv.state == AGVState.IDLE
@@ -482,6 +451,20 @@ class Dispatcher:
                 and job.cart.carried_by is None
             ):
                 self._complete_job(job)
+
+    def _find_alt_tile(
+        self, job: Job, carts: list[Cart],
+    ) -> tuple[int, int] | None:
+        """Find any free tile at the same station as *job*'s target."""
+        if job.job_type == JobType.MOVE_TO_PICK and job.station_id:
+            return self._find_tile(job.station_id, TileType.PICK_STATION, carts)
+        station_map = {
+            JobType.PICKUP_TO_BOX_DEPOT: ("Box_Depot", TileType.PARKING),
+            JobType.RETURN_TO_BOX_DEPOT: ("Box_Depot", TileType.PARKING),
+            JobType.MOVE_TO_PACKOFF: ("Pack_off", TileType.PARKING),
+        }
+        entry = station_map.get(job.job_type)
+        return self._find_tile(*entry, carts) if entry else None
 
     def _cancel_stuck_jobs(
         self,
@@ -523,7 +506,7 @@ class Dispatcher:
                     job.job_id, agv.agv_id,
                 )
 
-            # Case 2: stuck while carrying a cart — retarget to distant parking
+            # Case 2: stuck while carrying a cart — retarget to nearest parking
             elif (
                 agv.carrying_cart is not None
                 and agv.state == AGVState.MOVING_TO_DROPOFF
@@ -532,10 +515,7 @@ class Dispatcher:
                     a.pos for a in agvs
                     if a is not agv and a.state != AGVState.IDLE
                 }
-                # Min distance of 5 to avoid ping-ponging to adjacent tiles
-                buffer = self._find_buffer_spot(agv.pos, carts, tiles, min_dist=RETARGET_MIN_DIST)
-                if buffer is None:
-                    buffer = self._find_buffer_spot(agv.pos, carts, tiles)
+                buffer = self._find_buffer_spot(agv.pos, carts, tiles)
                 if buffer and agv.start_dropoff(buffer, graph, tiles, blocked=blocked):
                     job.target_pos = buffer
                     job.job_type = JobType.MOVE_TO_BUFFER
