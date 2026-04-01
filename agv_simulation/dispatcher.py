@@ -74,26 +74,32 @@ class Dispatcher:
         cart_pos: tuple[int, int],
         carts: list[Cart],
     ) -> int | None:
-        """Pick the least-busy station from *remaining_stations* using fill-rate tiers + distance."""
+        """Pick the best station using weighted fill-rate + distance scoring.
+
+        Balances station load against travel distance so that nearby stations
+        with acceptable capacity beat distant empty ones (avoids cross-warehouse trips).
+        """
         fill = self.get_station_fill(carts)
-        candidates: list[tuple[int, float, int]] = []
+        candidates: list[tuple[float, int]] = []
         for s in remaining_stations:
             sid = f"S{s}"
             current, capacity, rate = fill.get(sid, (0, 0, 1.0))
             if current >= capacity:
                 continue
-            priority = 1 if rate <= 0.50 else (2 if rate <= 0.75 else 3)
             station_tiles = self._station_tiles.get((sid, TileType.PICK_STATION), [])
             dist = (
                 abs(cart_pos[0] - station_tiles[0][0]) + abs(cart_pos[1] - station_tiles[0][1])
                 if station_tiles
                 else float("inf")
             )
-            candidates.append((priority, dist, s))
+            # Weighted score: fill rate scaled to be comparable with distance.
+            # A 50% full station 5 tiles away beats a 0% station 40 tiles away.
+            score = rate * 30.0 + dist
+            candidates.append((score, s))
         if not candidates:
             return None
         candidates.sort()
-        return candidates[0][2]
+        return candidates[0][1]
 
     def _find_tile(
         self,
