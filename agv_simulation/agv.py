@@ -263,9 +263,11 @@ class AGV:
             if self.state == AGVState.MOVING_TO_PICKUP:
                 self.state = AGVState.PICKING_UP
                 self.action_timer = PICKUP_TIME
+                logger.debug("AGV %d arrived at pickup %s", self.agv_id, self.pos)
             elif self.state == AGVState.MOVING_TO_DROPOFF:
                 self.state = AGVState.DROPPING_OFF
                 self.action_timer = DROPOFF_TIME
+                logger.debug("AGV %d arrived at dropoff %s", self.agv_id, self.pos)
             else:
                 self.state = AGVState.IDLE
 

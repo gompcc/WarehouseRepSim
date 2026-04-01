@@ -528,7 +528,7 @@ class Dispatcher:
                 job.assigned_agv = None
                 job.failed_agvs.add(agv.agv_id)
                 self.pending_jobs.append(job)
-                logger.info(
+                logger.warning(
                     "[Dispatcher] Cancelled stuck Job #%d (AGV %d) — re-queued",
                     job.job_id, agv.agv_id,
                 )
@@ -556,7 +556,7 @@ class Dispatcher:
                     agv.blocked_timer = 0.0
                     if job in self.active_jobs:
                         self.active_jobs.remove(job)
-                    logger.info(
+                    logger.warning(
                         "[Dispatcher] Gave up on AGV %d — dropped C%d at %s",
                         agv.agv_id, cart.cart_id, drop_pos,
                     )
@@ -572,7 +572,7 @@ class Dispatcher:
                         job.job_type = JobType.MOVE_TO_BUFFER
                         agv.blocked_timer = 0.0
                         agv.is_blocked = False
-                        logger.info(
+                        logger.warning(
                             "[Dispatcher] Retargeted stuck AGV %d → buffer %s (attempt %d/3)",
                             agv.agv_id, buffer, job.retarget_count,
                         )
@@ -601,7 +601,7 @@ class Dispatcher:
                 agv.target = None
                 agv.is_blocked = False
                 agv.blocked_timer = 0.0
-                logger.info(
+                logger.warning(
                     "[Dispatcher] Reset blocked AGV %d at %s",
                     agv.agv_id, agv.pos,
                 )

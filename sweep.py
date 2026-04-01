@@ -30,13 +30,13 @@ def _init_worker():
 
 def _run_single(args):
     """Wrapper for multiprocessing: unpack args and call run_headless."""
-    num_agvs, num_carts, duration, tick_dt = args
+    num_agvs, num_carts, duration, tick_dt, log_level = args
     return run_headless(
         num_agvs=num_agvs,
         num_carts=num_carts,
         sim_duration=duration,
         tick_dt=tick_dt,
-        verbose=False,
+        log_level=log_level,
     )
 
 
@@ -56,6 +56,10 @@ def main():
                         help="Run sweep using multiprocessing")
     parser.add_argument("--workers", type=int, default=None,
                         help="Number of parallel workers (default: cpu_count, capped at 8)")
+    parser.add_argument("--log-level", type=str, default="WARNING",
+                        help="Log level for headless runs (default: WARNING)")
+    parser.add_argument("--log-file", type=str, default=None,
+                        help="Optional log file path")
     args = parser.parse_args()
 
     agv_counts = [int(x.strip()) for x in args.agvs.split(",")]
@@ -63,7 +67,8 @@ def main():
     duration = args.duration
     tick_dt = args.tick_dt
 
-    combos = [(a, c, duration, tick_dt) for a in agv_counts for c in cart_counts]
+    log_level = args.log_level
+    combos = [(a, c, duration, tick_dt, log_level) for a in agv_counts for c in cart_counts]
     total = len(combos)
 
     print(f"Sweep: {len(agv_counts)} AGV counts x {len(cart_counts)} cart counts = {total} runs")
@@ -96,7 +101,7 @@ def main():
                 num_carts=num_carts,
                 sim_duration=dur,
                 tick_dt=tdt,
-                verbose=False,
+                log_level=log_level,
             )
             results.append(result)
             print(f"  Orders={result['completed_orders']:>4}  "
