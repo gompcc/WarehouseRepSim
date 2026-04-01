@@ -65,8 +65,8 @@ CART_COLOR_PROCESSING = (255, 165, 0)   # orange
 CART_COLOR_WAITING    = (180, 100, 255) # purple — buffered, waiting for station
 CART_COLOR_COMPLETED  = (200, 50, 50)   # red
 
-BLOCK_TIMEOUT    = 3.0   # seconds blocked before attempting re-route
-REROUTE_COOLDOWN = 2.0   # min gap between re-route attempts
+BLOCK_TIMEOUT    = 1.5   # seconds blocked before attempting re-route
+REROUTE_COOLDOWN = 1.0   # min gap between re-route attempts
 JOB_CANCEL_TIMEOUT = 30.0  # seconds blocked before cancelling a non-carrying job
 MAX_CONCURRENT_DISPATCHES = 12  # max AGVs dispatched at once (prevents highway gridlock)
 
