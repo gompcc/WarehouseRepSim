@@ -370,7 +370,18 @@ def draw_metrics_panel(
         row("Orders/hr", f"{stats['per_hour']:.1f}")
     y += section_gap
 
-    # 5. BOTTLENECK ALERTS
+    # 5. CONSTRAINT (what's holding back throughput)
+    header("CONSTRAINT")
+    if dispatcher and agvs and carts:
+        (top_name, top_pct), all_scores = dispatcher.get_constraint(carts, agvs)
+        color = PANEL_RED if top_pct > 80 else PANEL_YELLOW if top_pct > 50 else PANEL_GREEN
+        row_raw(f"{top_name} ({top_pct}%)", color)
+        for name, pct in all_scores[:3]:
+            bar = "\u2588" * (pct // 10) + "\u2591" * (10 - pct // 10)
+            row(name, f"{bar} {pct}%")
+    y += section_gap
+
+    # 6. BOTTLENECK ALERTS
     header("ALERTS")
     if dispatcher:
         alerts = dispatcher.get_bottleneck_alerts(carts or [])

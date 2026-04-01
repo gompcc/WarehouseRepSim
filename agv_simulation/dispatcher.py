@@ -769,3 +769,122 @@ class Dispatcher:
             "avg_cycle": avg_cycle,
             "per_hour": per_hour,
         }
+
+    def get_constraint(
+        self,
+        carts: list[Cart],
+        agvs: list[AGV],
+    ) -> tuple[tuple[str, int], list[tuple[str, int]]]:
+        """Return (top_constraint, all_scores) where each score is 0-100 pressure."""
+        fill = self._station_fill_cache or self.get_station_fill(carts)
+
+        # Pack-off: physical occupancy + waiting queue
+        at_packoff = sum(
+            1 for c in carts
+            if c.carried_by is None and c.state == CartState.AT_PACKOFF
+        )
+        packoff_cap = STATIONS["Pack_off"]
+        waiting_for_packoff = sum(
+            1 for c in carts
+            if c.state == CartState.WAITING_FOR_STATION
+            and c.order and c.order.all_picked()
+        )
+        packoff_pressure = min(100, int(
+            (at_packoff / max(packoff_cap, 1)) * 70
+            + min(waiting_for_packoff, 5) * 6
+        ))
+
+        # Stations: max fill rate across S1-S9
+        max_rate = 0.0
+        busiest = "S1"
+        for i in range(1, 10):
+            sid = f"S{i}"
+            _, _, rate = fill.get(sid, (0, 0, 0.0))
+            if rate > max_rate:
+                max_rate = rate
+                busiest = sid
+        station_pressure = min(100, int(max_rate * 100))
+
+        # AGVs: % busy
+        active = sum(1 for a in agvs if a.current_job is not None)
+        agv_pressure = int((active / max(len(agvs), 1)) * 100)
+
+        # Highway: % blocked
+        blocked = sum(1 for a in agvs if a.is_blocked)
+        highway_pressure = int((blocked / max(len(agvs), 1)) * 100)
+
+        # Carts: high when all carts are busy (need more carts)
+        waiting = sum(1 for c in carts if c.state == CartState.WAITING_FOR_STATION)
+        cart_pressure = max(0, 100 - int((waiting / max(len(carts), 1)) * 200))
+
+        candidates = [
+            ("Pack-off", packoff_pressure),
+            (busiest, station_pressure),
+            ("AGVs", agv_pressure),
+            ("Highway", highway_pressure),
+            ("Carts", cart_pressure),
+        ]
+        candidates.sort(key=lambda x: -x[1])
+        return candidates[0], candidates
+
+    def export_results(
+        self,
+        sim_elapsed: float,
+        agvs: list[AGV],
+        carts: list[Cart],
+    ) -> None:
+        """Append simulation results to results/sim_results.md."""
+        import os
+        from datetime import datetime
+
+        os.makedirs("results", exist_ok=True)
+        filepath = "results/sim_results.md"
+
+        stats = self.get_throughput_stats(sim_elapsed)
+        top_constraint, all_scores = self.get_constraint(carts, agvs)
+        fill = self._station_fill_cache or self.get_station_fill(carts)
+
+        elapsed_m = int(sim_elapsed // 60)
+        elapsed_h = elapsed_m // 60
+        elapsed_m = elapsed_m % 60
+        avg_m = int(stats["avg_cycle"] // 60)
+        avg_s = int(stats["avg_cycle"] % 60)
+
+        active_agvs = sum(1 for a in agvs if a.current_job is not None)
+        blocked_agvs = sum(1 for a in agvs if a.is_blocked)
+        waiting_carts = sum(1 for c in carts if c.state == CartState.WAITING_FOR_STATION)
+
+        lines = [
+            "\n---\n",
+            f"## Run: {datetime.now().strftime('%Y-%m-%d %H:%M')}\n",
+            f"**Config**: {len(agvs)} AGVs, {len(carts)} carts"
+            f" | Packoff {PACKOFF_TIME}s, Pick {PICK_TIME_PER_ITEM}s/item\n",
+            f"**Elapsed**: {elapsed_h}h {elapsed_m}m"
+            f" | **Orders**: {stats['completed']:.0f}"
+            f" | **Orders/hr**: {stats['per_hour']:.1f}"
+            f" | **Avg cycle**: {avg_m}m {avg_s}s\n",
+            f"**Constraint**: {top_constraint[0]} ({top_constraint[1]}%)\n\n",
+            "| Resource | Pressure |\n",
+            "|----------|----------|\n",
+        ]
+        for name, pct in all_scores:
+            bar = "\u2588" * (pct // 10) + "\u2591" * (10 - pct // 10)
+            lines.append(f"| {name:<10s} | {bar} {pct}% |\n")
+
+        lines.append(f"\n| Station | Fill |\n")
+        lines.append(f"|---------|------|\n")
+        for sid in ["S1", "S2", "S3", "S4", "S5", "S6", "S7", "S8", "S9", "Pack_off", "Box_Depot"]:
+            cur, cap, rate = fill.get(sid, (0, 0, 0.0))
+            lines.append(f"| {sid:<10s} | {cur}/{cap} ({rate:.0%}) |\n")
+
+        lines.append(
+            f"\nAGV util: {active_agvs}/{len(agvs)} active"
+            f" | Blocked: {blocked_agvs}"
+            f" | Waiting carts: {waiting_carts}"
+            f" | Completed orders: {self.completed_orders}\n"
+        )
+
+        with open(filepath, "a") as f:
+            f.writelines(lines)
+
+        logger.info("[Export] Results appended to %s", filepath)

@@ -359,6 +359,9 @@ def main() -> None:
         )
         pygame.display.flip()
 
+    if sim_elapsed > 0:
+        dispatcher.export_results(sim_elapsed, agvs, carts)
+
     pygame.quit()
     sys.exit()
 
