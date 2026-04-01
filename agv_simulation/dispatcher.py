@@ -215,19 +215,35 @@ class Dispatcher:
                                     cart.cart_id, sid, buffer,
                                 )
                     elif cart.order.all_picked():
-                        target = self._find_tile("Pack_off", TileType.PARKING, carts)
-                        if target:
-                            job = Job(JobType.MOVE_TO_PACKOFF, cart, target)
-                            self.pending_jobs.append(job)
+                        # Only dispatch if pack-off has physical capacity
+                        at_packoff = sum(
+                            1 for c in carts
+                            if c.carried_by is None
+                            and c.state == CartState.AT_PACKOFF
+                        )
+                        if at_packoff < STATIONS["Pack_off"]:
+                            target = self._find_tile("Pack_off", TileType.PARKING, carts)
+                            if target:
+                                job = Job(JobType.MOVE_TO_PACKOFF, cart, target)
+                                self.pending_jobs.append(job)
+                            else:
+                                buffer = self._find_buffer_spot(cart.pos, carts, tiles)
+                                if buffer:
+                                    job = Job(JobType.MOVE_TO_BUFFER, cart, buffer)
+                                    self.pending_jobs.append(job)
+                                    logger.info(
+                                        "[Dispatcher] C%d: Pack-off full, buffering to %s",
+                                        cart.cart_id, buffer,
+                                    )
                         else:
-                            # Pack-off full — buffer the cart to free this tile
+                            # Pack-off physically full — buffer to free this station tile
                             buffer = self._find_buffer_spot(cart.pos, carts, tiles)
                             if buffer:
                                 job = Job(JobType.MOVE_TO_BUFFER, cart, buffer)
                                 self.pending_jobs.append(job)
                                 logger.info(
-                                    "[Dispatcher] C%d: Pack-off full, buffering to %s",
-                                    cart.cart_id, buffer,
+                                    "[Dispatcher] C%d: Pack-off full (%d/%d), buffering to %s",
+                                    cart.cart_id, at_packoff, STATIONS["Pack_off"], buffer,
                                 )
 
             elif cart.state == CartState.AT_PACKOFF and cart.process_timer <= 0:
@@ -570,6 +586,25 @@ class Dispatcher:
         """Re-route AGVs that have been blocked too long, nudge idle blockers."""
         for agv in agvs:
             if not agv.is_blocked or agv.blocked_timer < BLOCK_TIMEOUT:
+                continue
+
+            # Chronically blocked jobless AGV — give up and go idle
+            if (
+                agv.blocked_timer > JOB_CANCEL_TIMEOUT
+                and agv.current_job is None
+                and agv.carrying_cart is None
+            ):
+                agv.state = AGVState.IDLE
+                agv.path = []
+                agv.path_index = 0
+                agv.path_progress = 0.0
+                agv.target = None
+                agv.is_blocked = False
+                agv.blocked_timer = 0.0
+                logger.info(
+                    "[Dispatcher] Reset blocked AGV %d at %s",
+                    agv.agv_id, agv.pos,
+                )
                 continue
 
             blocker = None
