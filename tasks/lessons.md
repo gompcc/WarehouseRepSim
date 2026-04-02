@@ -139,3 +139,11 @@
 - **Result**: 56.5 orders/hr (was 62.0) | 14/25 cratered from 62.0 to 41.5
 - **Analysis**: Too-aggressive rerouting behind moving blockers wastes path calculations and creates longer paths. The blocker usually clears in <3s anyway. The current `BLOCK_TIMEOUT * 2 = 3.0s` patience is correct.
 - **Key insight**: Patience behind moving blockers is important. Most blocks by moving AGVs resolve naturally in 1-3s — rerouting is expensive and counterproductive.
+
+### Iteration 17: Skip Station Buffer — FAILURE
+
+- **Hypothesis**: When a cart finishes at a pick station and its next station is full, letting it wait in place (instead of buffering) will reduce unnecessary moves and improve throughput.
+- **Change**: Removed buffer job creation in `_create_jobs()` for PICKING-state carts whose next station is full. Cart stays at current tile instead.
+- **Result**: 55.5 orders/hr (was 62.0) | regression across all configs
+- **Analysis**: Carts waiting at stations block the station tile, preventing other carts from being processed there. Buffering to a nearby parking spot frees the station tile for productive use. The buffer move is NOT wasted — it's essential for station throughput.
+- **Key insight**: Always buffer carts away from station tiles when the next station is full. Station tile occupancy is a critical resource — never let a waiting cart block it.
