@@ -683,6 +683,112 @@ def compute_path(start: Position, goal: Position, map_data) -> List[Position]:
 
 Edge costs are weighted: highway tiles cost 1, all other walkable tiles cost 10. This makes AGVs strongly prefer highway routes. The goal tile always costs 1 regardless of type.
 
+Additionally, parking tiles on **sidetrack columns** (cols 8, 10, 37, 39 — immediately adjacent to highway cols 9 and 38) have edge cost 2. These act as overflow bypass lanes, allowing AGVs to route around congested highway segments at a small cost premium.
+
+### 6.5 Navigation & Physical Constraints Schema
+
+This section defines the physical reality rules that the simulation must enforce. These constraints model real-world AGV warehouse behaviour and must never be violated.
+
+#### 6.5.1 AGV Physical Model
+
+AGVs are low-profile platforms (~15cm tall) that travel **underneath** carts. They interact with carts through a **liftable platform mechanism**:
+
+| AGV State | Platform | Can Pass Under Carts? | Can Pass Under Other AGVs? |
+|-----------|----------|----------------------|---------------------------|
+| Empty (no cart) | Lowered | **YES** — slides freely under stationary carts | **NO** — AGV-to-AGV collision always applies |
+| Moving to pickup | Lowered | **YES** — platform is down until arrival at target cart | **NO** |
+| Picking up | Raising | **NO** — stationary at cart tile, platform engaging | **NO** |
+| Carrying cart | Raised | **NO** — elevated cart would collide with stationary carts | **NO** |
+| Dropping off | Lowering | **NO** — stationary at dropoff tile, platform disengaging | **NO** |
+
+**Key physical rule:** An AGV's raised platform + cart creates a combined unit (~80cm tall) that cannot pass under or through stationary carts (~65cm ground clearance). An AGV with lowered platform (~15cm) fits under all carts.
+
+#### 6.5.2 Collision Classes
+
+There are three distinct collision types, each with different rules:
+
+**1. AGV ↔ AGV (always blocked)**
+Two AGVs can never occupy the same tile simultaneously, regardless of platform state. AGVs are solid physical objects at ground level.
+
+- Enforced by: tile occupancy check before every move
+- Resolution: immediate A* reroute attempt → if reroute fails, block and wait → after `BLOCK_TIMEOUT`, dispatcher intervenes (nudge idle blockers or force reroute)
+
+**2. Cart ↔ Cart via AGV (blocked only when carrying)**
+An AGV carrying a raised cart cannot enter a tile occupied by a stationary cart. The elevated cart on the AGV would collide with the cart on the ground.
+
+- Enforced by: cart occupancy check, but ONLY when AGV has `carrying_cart` with `carried_by` set
+- An empty AGV freely passes under stationary carts (no check performed)
+
+**3. Cart ↔ Cart (stationary — no direct interaction)**
+Two stationary carts cannot be placed on the same tile, but this is enforced by the dispatcher's tile reservation system (`_reserved_tiles`), not by movement collision. Carts don't move on their own — they are always moved by AGVs.
+
+#### 6.5.3 Highway Navigation Rules
+
+The warehouse highway forms a single-lane **anti-clockwise** loop:
+
+```
+    ← ← ← ← ← Row 7 (westbound) ← ← ← ← ←
+    ↓                                         ↑
+   Col 9                                    Col 38
+ (southbound)                            (northbound)
+    ↓                                         ↑
+    → → → → → Row 38 (eastbound) → → → → → →
+```
+
+| Rule | Description |
+|------|-------------|
+| **One-way highways** | Highway tiles enforce directional travel via directed graph edges. An AGV cannot travel against the flow. |
+| **Bidirectional off-highway** | Parking, station, and spawn tiles allow movement in any direction. |
+| **No U-turns on highway** | Going against flow requires going around the full loop. Manhattan distance ≠ path distance due to this. |
+| **Sidetrack overflow** | Parking tiles on cols 8, 10, 37, 39 (adjacent to highway) serve as bypass lanes at cost 2. AGVs route through these when the highway is congested. |
+
+#### 6.5.4 Right-of-Way & Conflict Resolution
+
+When two AGVs need the same tile, conflicts are resolved by this priority chain:
+
+| Priority | Rule | Mechanism |
+|----------|------|-----------|
+| 1 | **Moving AGV has right of way over idle AGV** | Idle blockers are nudged aside by the dispatcher |
+| 2 | **First-to-arrive holds position** | Sequential update order — earlier-updated AGV occupies tile first |
+| 3 | **Carrying AGV > empty AGV** | Not currently enforced explicitly, but carrying AGVs have higher-priority jobs |
+| 4 | **Blocked AGV attempts reroute** | After `BLOCK_TIMEOUT` (1.5s), A* reroute avoiding occupied tiles |
+| 5 | **Reroute cooldown** | Minimum `REROUTE_COOLDOWN` (1.0s) between reroute attempts to prevent oscillation |
+| 6 | **Patience for moving blockers** | If blocker is actively moving (not idle), wait up to `BLOCK_TIMEOUT × 2` (3.0s) before rerouting — the blocker usually clears naturally |
+| 7 | **Job cancellation** | After `JOB_CANCEL_TIMEOUT` (30s) stuck, the job is cancelled and re-queued with a different AGV |
+
+#### 6.5.5 Tile Reservation vs. Physical Occupancy
+
+The simulation distinguishes between two occupancy concepts:
+
+| Concept | What it tracks | Used by |
+|---------|---------------|---------|
+| **Physical occupancy** | `.pos` of AGVs and stationary carts at this instant | AGV movement collision check (real-time, per-tick) |
+| **Tile reservation** | Tiles targeted by pending or active jobs | Dispatcher station/buffer assignment (prevents double-booking destinations) |
+
+**Important:** Tile reservations do NOT block AGV movement. An AGV can pass through a reserved tile. Reservations only prevent the dispatcher from sending two carts to the same destination tile.
+
+#### 6.5.6 Speed & Timing Constraints
+
+| Parameter | Value | Physical Meaning |
+|-----------|-------|-----------------|
+| `AGV_SPEED` | 1.0 tile/s | ~1 m/s travel speed |
+| `PICKUP_TIME` | 5.0s | Time to align, raise platform, and secure cart |
+| `DROPOFF_TIME` | 5.0s | Time to lower platform, disengage, and clear |
+| `tick_dt` | 0.1s | Simulation timestep — must stay < 1.0/AGV_SPEED to prevent multi-tile-per-tick phasing |
+
+#### 6.5.7 Known Physical Simplifications
+
+These are deliberate simplifications for simulation tractability:
+
+| Simplification | Reality | Simulation |
+|----------------|---------|------------|
+| **Instant acceleration** | AGVs accelerate/decelerate over ~1-2 tiles | AGVs move at constant speed, change direction instantly |
+| **No rotation time** | AGVs take ~1-2s to turn 90° | Direction changes are free |
+| **Integer tile positions** | AGVs can be anywhere in continuous space | AGVs snap to discrete tile grid |
+| **Perfect sensing** | Sensors have range limits and blind spots | AGVs have perfect global knowledge of all positions |
+| **Sequential updates** | All AGVs move truly simultaneously | AGVs are updated one at a time (earlier-in-list gets priority) |
+| **Cart drop teleportation** | A stuck AGV would lower the cart in place | When a stuck carrying-AGV gives up, the cart may be teleported to a nearby buffer tile |
+
 **Path Following:**
 ```python
 class AGV:
