@@ -14,15 +14,10 @@ from .models import Cart, Order, Job
 from .agv import AGV
 from .map_builder import build_map, build_graph
 from .dispatcher import Dispatcher
-from .constants import CART_SPAWN_TILES, PRELOAD_SPAWN_INTERVAL
+from .constants import CART_SPAWN_TILES, PRELOAD_SPAWN_INTERVAL, AGV_PARKING_SPOTS
 
 logger = logging.getLogger(__name__)
 
-# Same AGV parking spots as GUI (__main__.py)
-_AGV_SPOTS = [
-    (8, 9), (10, 16), (8, 22), (10, 28), (8, 34),
-    (37, 9), (39, 15), (37, 21), (39, 27), (37, 33),
-]
 
 
 def _reset_id_counters() -> None:
@@ -77,11 +72,11 @@ def run_headless(
         pos for pos in graph
         if tiles[pos].tile_type in (TileType.PARKING, TileType.AGV_SPAWN)
         and tiles[pos].station_id is None
-        and pos not in set(_AGV_SPOTS)
+        and pos not in set(AGV_PARKING_SPOTS)
     ]
     for i in range(num_agvs):
-        if i < len(_AGV_SPOTS):
-            agvs.append(AGV(_AGV_SPOTS[i]))
+        if i < len(AGV_PARKING_SPOTS):
+            agvs.append(AGV(AGV_PARKING_SPOTS[i]))
         elif extra_parking:
             agvs.append(AGV(extra_parking.pop(0)))
         else:

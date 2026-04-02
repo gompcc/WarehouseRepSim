@@ -64,7 +64,7 @@ class Order:
         length = random.randint(1, 9)
         self.picks: list[int] = [random.randint(1, 9) for _ in range(length)]
         self.stations_to_visit: list[int] = sorted(set(self.picks))
-        self.completed_stations: list[int] = []
+        self.completed_stations: set[int] = set()
 
     def items_at_station(self, station_num: int) -> int:
         """Return the number of items to pick at *station_num*."""
@@ -79,7 +79,7 @@ class Order:
 
     def complete_station(self, station_num: int) -> None:
         """Mark *station_num* as completed."""
-        self.completed_stations.append(station_num)
+        self.completed_stations.add(station_num)
 
     def all_picked(self) -> bool:
         """Return ``True`` if all stations have been visited."""

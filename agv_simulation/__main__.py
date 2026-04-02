@@ -19,6 +19,7 @@ from .constants import (
     FPS, SPEED_STEPS, AUTO_SPAWN_INTERVAL,
     AGV_SPAWN_TILE, CART_SPAWN_TILES, BOX_DEPOT_TIME,
     PRELOAD_CART_COUNT, PRELOAD_SPAWN_INTERVAL,
+    AGV_PARKING_SPOTS,
 )
 from .models import Cart
 from .agv import AGV
@@ -69,11 +70,7 @@ def main() -> None:
     sim_elapsed: float = 0.0
 
     # Pre-load 10 AGVs distributed near stations across the map
-    _agv_spots = [
-        (8, 9), (10, 16), (8, 22), (10, 28), (8, 34),
-        (37, 9), (39, 15), (37, 21), (39, 27), (37, 33),
-    ]
-    for pos in _agv_spots:
+    for pos in AGV_PARKING_SPOTS:
         if pos in tiles:
             agvs.append(AGV(pos))
     if agvs:

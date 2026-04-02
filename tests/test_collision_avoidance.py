@@ -510,7 +510,7 @@ def test_packoff_capacity_check_uses_physical_occupancy():
     from agv_simulation.models import Order
     waiting.order = Order()
     waiting.order.stations_to_visit = []
-    waiting.order.completed_stations = []
+    waiting.order.completed_stations = set()
     waiting.order.picks = []
     carts.append(waiting)
     dispatcher._create_jobs(carts, graph, tiles)

@@ -65,8 +65,8 @@ CART_COLOR_PROCESSING = (255, 165, 0)   # orange
 CART_COLOR_WAITING    = (180, 100, 255) # purple — buffered, waiting for station
 CART_COLOR_COMPLETED  = (200, 50, 50)   # red
 
-BLOCK_TIMEOUT    = 1.5   # seconds blocked before attempting re-route
-REROUTE_COOLDOWN = 1.0   # min gap between re-route attempts
+BLOCK_TIMEOUT    = 3.0   # seconds blocked before attempting re-route
+REROUTE_COOLDOWN = 2.0   # min gap between re-route attempts
 JOB_CANCEL_TIMEOUT = 30.0  # seconds blocked before cancelling a non-carrying job
 MAX_CONCURRENT_DISPATCHES = 12  # max AGVs dispatched at once (prevents highway gridlock)
 
@@ -83,3 +83,9 @@ LEFT_HWY_COL   = 9     # single highway down the left section
 RIGHT_HWY_COL  = 38    # single highway up the right section
 NORTH_HWY_ROW  = 7     # horizontal highway across the top
 EAST_HWY_ROW   = 38    # horizontal highway across the bottom
+
+# Pre-positioned AGV parking spots near stations (used by GUI and headless)
+AGV_PARKING_SPOTS = [
+    (8, 9), (10, 16), (8, 22), (10, 28), (8, 34),
+    (37, 9), (39, 15), (37, 21), (39, 27), (37, 33),
+]

@@ -37,6 +37,8 @@ class Dispatcher:
         self.cart_start_times: dict[int, float] = {}
         self.cycle_times: list[float] = []
         self._sim_elapsed: float = 0.0
+        self._reserved_cache: set[tuple[int, int]] | None = None
+        self._carts_with_jobs: set[int] = set()
 
     def _occupied_tiles(self, carts: list[Cart]) -> set[tuple[int, int]]:
         """Return tiles physically occupied by stationary carts (no job reservations)."""
@@ -55,7 +57,7 @@ class Dispatcher:
         self, carts: list[Cart]
     ) -> dict[str, tuple[int, int, float]]:
         """Return ``{station_id: (current, capacity, fill_rate)}`` for all stations."""
-        reserved = self._reserved_tiles(carts)
+        reserved = self._reserved_cache if self._reserved_cache is not None else self._reserved_tiles(carts)
         fill: dict[str, tuple[int, int, float]] = {}
         for station_id, capacity in STATIONS.items():
             key = (
@@ -113,12 +115,42 @@ class Dispatcher:
         if not positions:
             return None
         if carts is not None:
-            reserved = self._reserved_tiles(carts)
+            reserved = self._reserved_cache if self._reserved_cache is not None else self._reserved_tiles(carts)
             for pos in positions:
                 if pos not in reserved:
                     return pos
             return None
         return positions[0]
+
+    def _find_nearest_parking(
+        self,
+        near_pos: tuple[int, int],
+        tiles: dict[tuple[int, int], Tile],
+        occupied: set[tuple[int, int]],
+        allow_spawn: bool = False,
+    ) -> tuple[int, int] | None:
+        """Return the nearest non-station PARKING tile not in *occupied*.
+
+        If *allow_spawn* is True, AGV_SPAWN tiles are also eligible.
+        """
+        best: tuple[int, int] | None = None
+        best_dist = float("inf")
+        for pos, tile in tiles.items():
+            if tile.tile_type == TileType.PARKING:
+                pass
+            elif allow_spawn and tile.tile_type == TileType.AGV_SPAWN:
+                pass
+            else:
+                continue
+            if tile.station_id is not None:
+                continue
+            if pos in occupied:
+                continue
+            dist = abs(pos[0] - near_pos[0]) + abs(pos[1] - near_pos[1])
+            if dist < best_dist:
+                best_dist = dist
+                best = pos
+        return best
 
     def _find_buffer_spot(
         self,
@@ -128,33 +160,67 @@ class Dispatcher:
         exclude: set[tuple[int, int]] | None = None,
     ) -> tuple[int, int] | None:
         """Find the nearest unoccupied PARKING tile to use as a temporary buffer."""
-        reserved = self._reserved_tiles(carts)
+        reserved = self._reserved_cache if self._reserved_cache is not None else self._reserved_tiles(carts)
         if exclude:
             reserved = reserved | exclude
-        best: tuple[int, int] | None = None
-        best_dist = float("inf")
-        for pos, tile in tiles.items():
-            if tile.tile_type != TileType.PARKING:
-                continue
-            if tile.station_id is not None:
-                continue  # skip station-associated parking (Box Depot, Pack-off)
-            if pos in reserved:
-                continue
-            dist = abs(pos[0] - near_pos[0]) + abs(pos[1] - near_pos[1])
-            if dist < best_dist:
-                best_dist = dist
-                best = pos
-        return best
+        return self._find_nearest_parking(near_pos, tiles, reserved)
 
     def _has_job(self, cart: Cart) -> bool:
         """Check if *cart* already has a pending or active job."""
-        for job in self.pending_jobs:
-            if job.cart is cart:
-                return True
-        for job in self.active_jobs:
-            if job.cart is cart:
-                return True
-        return False
+        return cart.cart_id in self._carts_with_jobs
+
+    def _enqueue_job(self, job: Job) -> None:
+        """Append *job* to pending queue and track the cart."""
+        self.pending_jobs.append(job)
+        self._carts_with_jobs.add(job.cart.cart_id)
+
+    def _next_station_job(
+        self, cart: Cart, carts: list[Cart],
+    ) -> Job | None:
+        """Try to create a MOVE_TO_PICK job for *cart*'s next station."""
+        if not cart.order:
+            return None
+        remaining = [
+            s for s in cart.order.stations_to_visit
+            if s not in cart.order.completed_stations
+        ]
+        ns = self._pick_best_station(remaining, cart.pos, carts)
+        if ns is None:
+            ns = cart.order.next_station()
+        if ns is None:
+            return None
+        sid = f"S{ns}"
+        target = self._find_tile(sid, TileType.PICK_STATION, carts)
+        if not target:
+            return None
+        return Job(JobType.MOVE_TO_PICK, cart, target, station_id=sid)
+
+    def _packoff_job(
+        self, cart: Cart, carts: list[Cart],
+    ) -> Job | None:
+        """Try to create a MOVE_TO_PACKOFF job (checks physical capacity)."""
+        at_packoff = sum(
+            1 for c in carts
+            if c.carried_by is None and c.state == CartState.AT_PACKOFF
+        )
+        if at_packoff >= STATIONS["Pack_off"]:
+            return None
+        target = self._find_tile("Pack_off", TileType.PARKING, carts)
+        if not target:
+            return None
+        return Job(JobType.MOVE_TO_PACKOFF, cart, target)
+
+    def _buffer_job(
+        self,
+        cart: Cart,
+        carts: list[Cart],
+        tiles: dict[tuple[int, int], Tile],
+    ) -> Job | None:
+        """Try to create a MOVE_TO_BUFFER job at nearest free parking."""
+        buffer = self._find_buffer_spot(cart.pos, carts, tiles)
+        if not buffer:
+            return None
+        return Job(JobType.MOVE_TO_BUFFER, cart, buffer)
 
     def _create_jobs(
         self,
@@ -171,8 +237,7 @@ class Dispatcher:
             if cart.state == CartState.SPAWNED and cart.carried_by is None:
                 target = self._find_tile("Box_Depot", TileType.PARKING, carts)
                 if target:
-                    job = Job(JobType.PICKUP_TO_BOX_DEPOT, cart, target)
-                    self.pending_jobs.append(job)
+                    self._enqueue_job(Job(JobType.PICKUP_TO_BOX_DEPOT, cart, target))
                     self.cart_start_times[cart.cart_id] = self._sim_elapsed
 
             elif cart.state == CartState.AT_BOX_DEPOT and cart.process_timer <= 0:
@@ -184,117 +249,51 @@ class Dispatcher:
                         cart.order.picks,
                         ["S" + str(s) for s in cart.order.stations_to_visit],
                     )
-                remaining = [
-                    s for s in cart.order.stations_to_visit
-                    if s not in cart.order.completed_stations
-                ]
-                ns = self._pick_best_station(remaining, cart.pos, carts)
-                if ns is None:
-                    ns = cart.order.next_station()
-                if ns is not None:
-                    sid = f"S{ns}"
-                    target = self._find_tile(sid, TileType.PICK_STATION, carts)
-                    if target:
-                        job = Job(JobType.MOVE_TO_PICK, cart, target, station_id=sid)
-                        self.pending_jobs.append(job)
+                job = self._next_station_job(cart, carts)
+                if job:
+                    self._enqueue_job(job)
 
             elif cart.state == CartState.PICKING and cart.process_timer <= 0:
                 if cart.order:
-                    remaining = [
-                        s for s in cart.order.stations_to_visit
-                        if s not in cart.order.completed_stations
-                    ]
-                    ns = self._pick_best_station(remaining, cart.pos, carts)
-                    if ns is None:
-                        ns = cart.order.next_station()
-                    if ns is not None:
-                        sid = f"S{ns}"
-                        target = self._find_tile(sid, TileType.PICK_STATION, carts)
-                        if target:
-                            job = Job(JobType.MOVE_TO_PICK, cart, target, station_id=sid)
-                            self.pending_jobs.append(job)
-                        else:
-                            # Station full — buffer the cart to free this tile
-                            buffer = self._find_buffer_spot(cart.pos, carts, tiles)
-                            if buffer:
-                                job = Job(JobType.MOVE_TO_BUFFER, cart, buffer)
-                                self.pending_jobs.append(job)
-                                logger.info(
-                                    "[Dispatcher] C%d: station %s full, buffering to %s",
-                                    cart.cart_id, sid, buffer,
-                                )
+                    job = self._next_station_job(cart, carts)
+                    if job:
+                        self._enqueue_job(job)
                     elif cart.order.all_picked():
-                        # Only dispatch if pack-off has physical capacity
-                        at_packoff = sum(
-                            1 for c in carts
-                            if c.carried_by is None
-                            and c.state == CartState.AT_PACKOFF
-                        )
-                        if at_packoff < STATIONS["Pack_off"]:
-                            target = self._find_tile("Pack_off", TileType.PARKING, carts)
-                            if target:
-                                job = Job(JobType.MOVE_TO_PACKOFF, cart, target)
-                                self.pending_jobs.append(job)
-                            else:
-                                buffer = self._find_buffer_spot(cart.pos, carts, tiles)
-                                if buffer:
-                                    job = Job(JobType.MOVE_TO_BUFFER, cart, buffer)
-                                    self.pending_jobs.append(job)
-                                    logger.info(
-                                        "[Dispatcher] C%d: Pack-off full, buffering to %s",
-                                        cart.cart_id, buffer,
-                                    )
-                        else:
-                            # Pack-off physically full — buffer to free this station tile
-                            buffer = self._find_buffer_spot(cart.pos, carts, tiles)
-                            if buffer:
-                                job = Job(JobType.MOVE_TO_BUFFER, cart, buffer)
-                                self.pending_jobs.append(job)
+                        job = self._packoff_job(cart, carts) or self._buffer_job(cart, carts, tiles)
+                        if job:
+                            self._enqueue_job(job)
+                            if job.job_type == JobType.MOVE_TO_BUFFER:
                                 logger.info(
-                                    "[Dispatcher] C%d: Pack-off full (%d/%d), buffering to %s",
-                                    cart.cart_id, at_packoff, STATIONS["Pack_off"], buffer,
+                                    "[Dispatcher] C%d: Pack-off full, buffering to %s",
+                                    cart.cart_id, job.target_pos,
                                 )
+                    else:
+                        # Station full — buffer to free this tile
+                        job = self._buffer_job(cart, carts, tiles)
+                        if job:
+                            self._enqueue_job(job)
+                            logger.info(
+                                "[Dispatcher] C%d: station full, buffering to %s",
+                                cart.cart_id, job.target_pos,
+                            )
 
             elif cart.state == CartState.AT_PACKOFF and cart.process_timer <= 0:
                 target = self._find_tile("Box_Depot", TileType.PARKING, carts)
                 if target:
-                    job = Job(JobType.RETURN_TO_BOX_DEPOT, cart, target)
-                    self.pending_jobs.append(job)
+                    self._enqueue_job(Job(JobType.RETURN_TO_BOX_DEPOT, cart, target))
 
             elif cart.state == CartState.WAITING_FOR_STATION and cart.carried_by is None:
                 if cart.order:
-                    remaining = [
-                        s for s in cart.order.stations_to_visit
-                        if s not in cart.order.completed_stations
-                    ]
-                    if remaining:
-                        ns = self._pick_best_station(remaining, cart.pos, carts)
-                        if ns is None:
-                            ns = cart.order.next_station()
-                        if ns is not None:
-                            sid = f"S{ns}"
-                            target = self._find_tile(sid, TileType.PICK_STATION, carts)
-                            if target:
-                                job = Job(JobType.MOVE_TO_PICK, cart, target, station_id=sid)
-                                self.pending_jobs.append(job)
-                    elif cart.order.all_picked():
-                        # Only dispatch if pack-off has physical capacity
-                        at_packoff = sum(
-                            1 for c in carts
-                            if c.carried_by is None
-                            and c.state == CartState.AT_PACKOFF
-                        )
-                        if at_packoff < STATIONS["Pack_off"]:
-                            target = self._find_tile("Pack_off", TileType.PARKING, carts)
-                            if target:
-                                job = Job(JobType.MOVE_TO_PACKOFF, cart, target)
-                                self.pending_jobs.append(job)
+                    job = self._next_station_job(cart, carts)
+                    if not job and cart.order.all_picked():
+                        job = self._packoff_job(cart, carts)
+                    if job:
+                        self._enqueue_job(job)
 
             elif cart.state == CartState.COMPLETED and cart.carried_by is None:
                 target = self._find_tile("Box_Depot", TileType.PARKING, carts)
                 if target:
-                    job = Job(JobType.RETURN_TO_BOX_DEPOT, cart, target)
-                    self.pending_jobs.append(job)
+                    self._enqueue_job(Job(JobType.RETURN_TO_BOX_DEPOT, cart, target))
 
     # Priority: complete-cycle jobs first (frees carts for reuse)
     _JOB_PRIORITY = {
@@ -425,6 +424,7 @@ class Dispatcher:
             agv.current_job = None
         if job in self.active_jobs:
             self.active_jobs.remove(job)
+        self._carts_with_jobs.discard(job.cart.cart_id)
 
     def _progress_jobs(
         self,
@@ -551,7 +551,7 @@ class Dispatcher:
                     self.active_jobs.remove(job)
                 job.assigned_agv = None
                 job.failed_agvs.add(agv.agv_id)
-                self.pending_jobs.append(job)
+                self._enqueue_job(job)
                 logger.warning(
                     "[Dispatcher] Cancelled stuck Job #%d (AGV %d) — re-queued",
                     job.job_id, agv.agv_id,
@@ -580,6 +580,7 @@ class Dispatcher:
                     agv.blocked_timer = 0.0
                     if job in self.active_jobs:
                         self.active_jobs.remove(job)
+                    self._carts_with_jobs.discard(cart.cart_id)
                     logger.warning(
                         "[Dispatcher] Gave up on AGV %d — dropped C%d at %s",
                         agv.agv_id, cart.cart_id, drop_pos,
@@ -646,17 +647,9 @@ class Dispatcher:
                 and not blocker.carrying_cart
             ):
                 agv_positions = {a.pos for a in agvs}
-                best_tile = None
-                best_dist = float("inf")
-                for pos, tile in tiles.items():
-                    if tile.tile_type in (TileType.PARKING, TileType.AGV_SPAWN):
-                        if tile.station_id is not None:
-                            continue  # skip station-associated parking
-                        if pos not in agv_positions:
-                            d = abs(pos[0] - blocker.pos[0]) + abs(pos[1] - blocker.pos[1])
-                            if d < best_dist:
-                                best_dist = d
-                                best_tile = pos
+                best_tile = self._find_nearest_parking(
+                    blocker.pos, tiles, agv_positions, allow_spawn=True,
+                )
                 if best_tile and blocker.set_destination(best_tile, graph, tiles):
                     logger.info(
                         "[Collision] Nudged idle AGV %d from %s → %s",
@@ -703,20 +696,9 @@ class Dispatcher:
             tile = tiles.get(agv.pos)
             if tile is None or tile.tile_type != TileType.HIGHWAY:
                 continue
-            # Find nearest parking/spawn tile not occupied by another AGV
-            best: tuple[int, int] | None = None
-            best_dist = float("inf")
-            for pos, t in tiles.items():
-                if t.tile_type not in (TileType.PARKING, TileType.AGV_SPAWN):
-                    continue
-                if t.station_id is not None:
-                    continue  # skip station-associated parking
-                if pos in agv_positions:
-                    continue
-                d = abs(pos[0] - agv.pos[0]) + abs(pos[1] - agv.pos[1])
-                if d < best_dist:
-                    best_dist = d
-                    best = pos
+            best = self._find_nearest_parking(
+                agv.pos, tiles, agv_positions, allow_spawn=True,
+            )
             if best and agv.set_destination(best, graph, tiles):
                 logger.info(
                     "[Dispatcher] Parking idle AGV %d off highway → %s",
@@ -739,6 +721,7 @@ class Dispatcher:
     ) -> None:
         """Main dispatcher tick — called each frame after AGV updates."""
         self._sim_elapsed = sim_elapsed
+        self._reserved_cache = self._reserved_tiles(carts)
         self._station_fill_cache = self.get_station_fill(carts)
         self._cancel_stuck_jobs(agvs, carts, graph, tiles)
         self._create_jobs(carts, graph, tiles)
@@ -746,6 +729,7 @@ class Dispatcher:
         self._progress_jobs(agvs, carts, graph, tiles)
         self._handle_blocked_agvs(agvs, graph, tiles)
         self._park_idle_agvs(agvs, graph, tiles)
+        self._reserved_cache = None
 
     def get_bottleneck_alerts(self, carts: list[Cart]) -> list[str]:
         """Return list of alert strings for current bottlenecks."""

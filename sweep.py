@@ -94,14 +94,14 @@ def main():
                       f"Wall={result['wall_clock_seconds']:.1f}s")
     else:
         for i, combo in enumerate(combos, 1):
-            num_agvs, num_carts, dur, tdt = combo
+            num_agvs, num_carts, dur, tdt, ll = combo
             print(f"  [{i}/{total}] AGVs={num_agvs}, Carts={num_carts} ...", end="", flush=True)
             result = run_headless(
                 num_agvs=num_agvs,
                 num_carts=num_carts,
                 sim_duration=dur,
                 tick_dt=tdt,
-                log_level=log_level,
+                log_level=ll,
             )
             results.append(result)
             print(f"  Orders={result['completed_orders']:>4}  "
