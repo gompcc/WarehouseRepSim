@@ -125,9 +125,12 @@ class Dispatcher:
         near_pos: tuple[int, int],
         carts: list[Cart],
         tiles: dict[tuple[int, int], Tile],
+        exclude: set[tuple[int, int]] | None = None,
     ) -> tuple[int, int] | None:
         """Find the nearest unoccupied PARKING tile to use as a temporary buffer."""
         reserved = self._reserved_tiles(carts)
+        if exclude:
+            reserved = reserved | exclude
         best: tuple[int, int] | None = None
         best_dist = float("inf")
         for pos, tile in tiles.items():
@@ -468,8 +471,12 @@ class Dispatcher:
                             success = True
 
                 # 3. Buffer immediately if station unreachable
+                #    Exclude AGV's current pos so the cart isn't put back
+                #    where it was just picked up (no-op loop).
                 if not success and job.job_type != JobType.MOVE_TO_BUFFER:
-                    buffer = self._find_buffer_spot(agv.pos, carts, tiles)
+                    buffer = self._find_buffer_spot(
+                        agv.pos, carts, tiles, exclude={agv.pos},
+                    )
                     if buffer and agv.start_dropoff(
                         buffer, graph, tiles, blocked=blocked,
                     ):
@@ -558,7 +565,7 @@ class Dispatcher:
                 if job.retarget_count >= 3:
                     # Give up — drop cart at nearest parking and free AGV
                     cart = agv.carrying_cart
-                    drop_pos = self._find_buffer_spot(agv.pos, carts, tiles) or agv.pos
+                    drop_pos = self._find_buffer_spot(agv.pos, carts, tiles, exclude={agv.pos}) or agv.pos
                     cart.state = CartState.WAITING_FOR_STATION
                     cart.carried_by = None
                     cart.pos = drop_pos
@@ -583,7 +590,7 @@ class Dispatcher:
                         a.pos for a in agvs
                         if a is not agv and a.state != AGVState.IDLE
                     }
-                    buffer = self._find_buffer_spot(agv.pos, carts, tiles)
+                    buffer = self._find_buffer_spot(agv.pos, carts, tiles, exclude={agv.pos})
                     if buffer and agv.start_dropoff(buffer, graph, tiles, blocked=blocked):
                         job.target_pos = buffer
                         job.job_type = JobType.MOVE_TO_BUFFER
