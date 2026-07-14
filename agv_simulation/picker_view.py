@@ -80,6 +80,7 @@ def draw_picker_info(
         lines_order,
         pick_cycle,
         f"busy {live['busy_fraction']:.0%}"
+        f" · {live['lines_per_picker_hr']:.0f} lines/picker/hr"
         f" · carts: {live['carts_served']} done"
         f" · {live['carts_left_early']} left early",
     ]

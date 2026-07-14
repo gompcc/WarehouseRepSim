@@ -501,6 +501,10 @@ class PickerManager:
             "busy_fraction": (
                 self.busy_seconds / total_crew_seconds if total_crew_seconds else 0.0
             ),
+            # Throughput per picker (business target: 240 lines/picker/hr)
+            "lines_per_picker_hr": (
+                n / (total_crew_seconds / 3600.0) if total_crew_seconds else 0.0
+            ),
             "per_station": {
                 sid: {
                     "picks_done": int(s["picks_done"]),

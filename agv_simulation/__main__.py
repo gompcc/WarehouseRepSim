@@ -104,6 +104,7 @@ def main() -> None:
     paused: bool = False
     toggle_rects: dict = {}
     strategy_events: list[tuple[float, str]] = []  # graph markers
+    agv_constraint_s: float = 0.0  # continuous sim-s with AGVs as constraint
 
     # Per-slotting picks/hr curves: slotting -> [(sim_t, cumulative picks)].
     # Survives world restarts so strategies can be compared on one graph.
@@ -329,6 +330,7 @@ def main() -> None:
                     agvs, carts = env.agvs, env.carts
                     selected_agv = None       # belonged to the old world
                     strategy_events = []      # markers use old-run sim times
+                    agv_constraint_s = 0.0    # constraint clock restarts too
                     last_sample_t = 0.0
                     logger.info(
                         "[Slotting] %s -> %s — world restarted (seed %d, fleet %dA/%dC)",
@@ -440,6 +442,25 @@ def main() -> None:
             env.step(sim_dt)
             dispatcher.update(carts, agvs, graph, tiles, sim_elapsed=env.sim_elapsed)
             env.audit(sim_dt)
+
+            # Auto-scale AGVs (user rule 2026-07-14): whenever AGVs are the
+            # binding constraint for >10 continuous sim-seconds, add one.
+            (top_name, _top_pct), _scores = dispatcher.get_constraint(carts, agvs)
+            if top_name == "AGVs":
+                agv_constraint_s += sim_dt
+                if agv_constraint_s >= 10.0:
+                    agv_constraint_s = 0.0
+                    env.agv_preload_remaining += 1
+                    fleet_n = len(agvs) + env.agv_preload_remaining
+                    strategy_events.append(
+                        (env.sim_elapsed, f"+AGV ({fleet_n})")
+                    )
+                    logger.info(
+                        "[AutoScale] AGVs constrained 10s → +1 AGV (fleet %d)",
+                        fleet_n,
+                    )
+            else:
+                agv_constraint_s = 0.0
 
             if env.sim_elapsed - last_sample_t >= PICKS_SAMPLE_INTERVAL:
                 picks_history.setdefault(env.catalog.slotting, []).append(
