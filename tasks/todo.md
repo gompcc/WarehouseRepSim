@@ -96,13 +96,19 @@ COMMITTED through `3f27a16`. Tree was clean at handoff except `.claude/`.
       (STRATEGIES panel; picker overlay shows the mode). 4 new tests
       (64 green). Experiment matrix §A2 added to EXPERIMENT_DESIGN.md.
       NO experiment runs yet — user said hold headless runs until told.
-- [ ] **Integration sweep** — seeded runs per slotting × picker strategy,
-      GUI snapshot, no stuck pathologies, tests green.
-- [ ] **Cleanup (subagents)** — dead code, efficiency sweep (dispatcher
-      scans, picker updates), eliminate happy-path-only testing.
-- [ ] **Run experiments + 2-page findings doc** — per
-      EXPERIMENT_DESIGN.md: §product layout, §dispatcher strategies,
-      4–6 decision-grade figures (walk-time bar chart required).
+- [x] **Integration sweep** — DONE: 6 combos × 8h seed-42, all gates clean
+      (results/runs/integration_sweep.json).
+- [x] **Cleanup (subagents)** — DONE (commit 3278a9d): dead code removed
+      (CART_SPAWN, sample_zone_skus), dispatcher hot-path candidate lists
+      (bit-identical verified), 7 edge-case tests. Deferred: _reserved_tiles
+      memoization, cart_start_times leak on retirement.
+- [x] **Run experiments + findings doc** — DONE (commit 4ceab36): 40-run
+      matrix, `results/FINDINGS_2026-07-14.md`. Decisions: ADOPT fibonacci
+      slotting (+49%; mechanism = zone BALANCE not walk distance) + dynamic
+      pickers (+30%; winner 32.4 o/hr = 1.94× baseline); REJECT dispatch
+      strategies (ETA +1.6% below bar; Hungarian tail-risk: one seed 9.9).
+      Next frontier: staffing hot stations, more AGVs (winner is 80%
+      AGV-utilized), shorter pick cycles toward 240 lines/picker/hr.
 
 Multi-session warning: another Claude session may share this working tree
 and branch — check `git status` for foreign changes before editing/committing;
