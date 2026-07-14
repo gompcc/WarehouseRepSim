@@ -3,8 +3,9 @@ from .enums import TileType
 # ============================================================
 # CONSTANTS
 # ============================================================
-TILE_SIZE = 20          # Each tile is 20x20 pixels
-GRID_COLS = 60          # 60 columns  (x: 0-59, left to right)
+TILE_SIZE = 16          # Each tile is 16x16 pixels (1 tile = 1 metre)
+GRID_COLS = 86          # 86 columns (x: 0-85). Cols 0-13 = west aisle bank,
+                        # 14-73 = legacy layout shifted +14, 74-85 = east bank
 GRID_ROWS = 40          # 40 rows     (y: 0-39, top to bottom)
 MAP_WIDTH     = GRID_COLS * TILE_SIZE   # 1200 px (map area)
 MAP_HEIGHT    = GRID_ROWS * TILE_SIZE  # 800 px
@@ -48,10 +49,10 @@ LABEL_BG       = (255, 255, 255)
 TILE_TRAVEL_TIME = 1.0      # seconds per tile
 AGV_SPEED        = 1.0      # tiles per second (= 1 / TILE_TRAVEL_TIME)
 AGV_COLOR        = (255, 60, 60)
-AGV_SPAWN_TILE   = (1, 7)   # leftmost North Highway tile at spawn exit
+AGV_SPAWN_TILE   = (15, 7)  # leftmost North Highway tile at spawn exit
 
 # Cart constants
-CART_SPAWN_TILES = [(0, 7)]
+CART_SPAWN_TILES = [(14, 7)]
 PICKUP_TIME  = 5.0          # seconds to pick up a cart
 DROPOFF_TIME = 5.0          # seconds to drop off a cart
 CART_COLOR_SPAWNED    = (255, 255, 255)  # white
@@ -77,8 +78,8 @@ PRELOAD_SPAWN_INTERVAL = 5.0   # sim-seconds between pre-load cart spawns
 
 # Fixed AGV parking spots shared by GUI and headless (near stations)
 DEFAULT_AGV_SPOTS = [
-    (8, 9), (10, 16), (8, 22), (10, 28), (8, 34),
-    (37, 9), (39, 15), (37, 21), (39, 27), (37, 33),
+    (22, 9), (24, 16), (22, 22), (24, 28), (22, 34),
+    (51, 9), (53, 15), (51, 21), (53, 27), (51, 33),
 ]
 
 # Environment audit
@@ -88,7 +89,7 @@ STUCK_WARN_SECONDS = 300.0  # no cart progress for this long → stuck event
 # KEY LAYOUT CONSTANTS  (column / row positions)
 # ============================================================
 # Highways
-LEFT_HWY_COL   = 9     # single highway down the left section
-RIGHT_HWY_COL  = 38    # single highway up the right section
+LEFT_HWY_COL   = 23    # single highway down the left section
+RIGHT_HWY_COL  = 52    # single highway up the right section
 NORTH_HWY_ROW  = 7     # horizontal highway across the top
 EAST_HWY_ROW   = 38    # horizontal highway across the bottom

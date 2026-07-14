@@ -76,29 +76,29 @@ def test_astar_blocked_allows_goal():
 def test_two_lane_directions():
     tiles = build_map()
     graph = build_graph(tiles)
-    for x in range(1, 9):
+    for x in range(15, 23):
         neighbors = graph.get((x, 7), set())
         assert (x + 1, 7) in neighbors
-        if x > 1:
+        if x > 15:
             assert (x - 1, 7) not in neighbors
-    for x in range(2, 9):
+    for x in range(16, 23):
         neighbors = graph.get((x, 8), set())
         assert (x - 1, 8) in neighbors
-        if x < 8:
+        if x < 22:
             assert (x + 1, 8) not in neighbors
 
 
 def test_agv_collision_block():
     tiles = build_map()
     graph = build_graph(tiles)
-    agv1 = AGV((1, 7))
-    agv2 = AGV((2, 7))
+    agv1 = AGV((15, 7))
+    agv2 = AGV((16, 7))
     agvs = [agv1, agv2]
-    agv1.path = [(1, 7), (2, 7), (3, 7)]
+    agv1.path = [(15, 7), (16, 7), (17, 7)]
     agv1.path_index = 0
     agv1.path_progress = 0.0
     agv1.state = AGVState.MOVING
-    agv1.target = (3, 7)
+    agv1.target = (17, 7)
     agv2.state = AGVState.IDLE
     agv1.update(1.5, agvs=agvs, carts=[], graph=graph, tiles=tiles)
     assert agv1.pos != agv2.pos
@@ -107,18 +107,18 @@ def test_agv_collision_block():
 def test_agv_reroute_on_block():
     tiles = build_map()
     graph = build_graph(tiles)
-    agv1 = AGV((1, 7))
-    agv2 = AGV((2, 7))
+    agv1 = AGV((15, 7))
+    agv2 = AGV((16, 7))
     agvs = [agv1, agv2]
-    agv1.path = [(1, 7), (2, 7), (3, 7)]
+    agv1.path = [(15, 7), (16, 7), (17, 7)]
     agv1.path_index = 0
     agv1.path_progress = 0.0
     agv1.state = AGVState.MOVING
-    agv1.target = (3, 7)
+    agv1.target = (17, 7)
     agv2.state = AGVState.IDLE
     agv1.update(1.5, agvs=agvs, carts=[], graph=graph, tiles=tiles)
     if agv1._just_rerouted:
-        assert (2, 7) not in agv1.path[1:]
+        assert (16, 7) not in agv1.path[1:]
 
 
 def test_agv_reroute_rejects_same_first_step():
@@ -147,51 +147,51 @@ def test_spawn_guard():
     agv1 = AGV(AGV_SPAWN_TILE)
     agvs.append(agv1)
     assert any(a.pos == AGV_SPAWN_TILE for a in agvs)
-    agv1.pos = (5, 7)
+    agv1.pos = (19, 7)
     assert not any(a.pos == AGV_SPAWN_TILE for a in agvs)
 
 
 def test_cart_cart_collision_only_when_carrying():
     tiles = build_map()
     graph = build_graph(tiles)
-    cart_blocker = Cart((3, 7))
+    cart_blocker = Cart((17, 7))
     cart_blocker.state = CartState.IDLE
     cart_blocker.carried_by = None
-    agv = AGV((1, 7))
-    agv.path = [(1, 7), (2, 7), (3, 7)]
+    agv = AGV((15, 7))
+    agv.path = [(15, 7), (16, 7), (17, 7)]
     agv.path_index = 0
     agv.path_progress = 0.0
     agv.state = AGVState.MOVING_TO_PICKUP
-    agv.target = (3, 7)
+    agv.target = (17, 7)
     agv.carrying_cart = cart_blocker
     carts = [cart_blocker]
     agvs = [agv]
     agv.update(3.0, agvs=agvs, carts=carts, graph=graph, tiles=tiles)
-    assert agv.pos == (3, 7)
+    assert agv.pos == (17, 7)
 
-    carried_cart = Cart((10, 7))
+    carried_cart = Cart((24, 7))
     carried_cart.state = CartState.IN_TRANSIT
     carried_cart.carried_by = None
-    agv2 = AGV((1, 7))
+    agv2 = AGV((15, 7))
     carried_cart.carried_by = agv2
     agv2.carrying_cart = carried_cart
-    agv2.path = [(1, 7), (2, 7), (3, 7)]
+    agv2.path = [(15, 7), (16, 7), (17, 7)]
     agv2.path_index = 0
     agv2.path_progress = 0.0
     agv2.state = AGVState.MOVING_TO_DROPOFF
-    agv2.target = (3, 7)
+    agv2.target = (17, 7)
     carts2 = [cart_blocker, carried_cart]
     agvs2 = [agv2]
     agv2.update(3.0, agvs=agvs2, carts=carts2, graph=graph, tiles=tiles)
-    assert agv2.pos != (3, 7) or agv2._just_rerouted
+    assert agv2.pos != (17, 7) or agv2._just_rerouted
 
 
 def test_no_tile_overlap_simulation():
     tiles = build_map()
     graph = build_graph(tiles)
-    start_positions = [(1, 7), (2, 7), (3, 7)]
+    start_positions = [(15, 7), (16, 7), (17, 7)]
     agvs = [AGV(pos) for pos in start_positions]
-    destinations = [(8, 12), (10, 17), (39, 35)]
+    destinations = [(22, 12), (24, 17), (53, 35)]
     for agv, dest in zip(agvs, destinations):
         agv.set_destination(dest, graph, tiles)
     dt = 0.1
@@ -271,7 +271,7 @@ def test_pick_best_station_prefers_emptier():
         c.state = CartState.PICKING
         c.carried_by = None
         carts.append(c)
-    cart_pos = (9, 20)
+    cart_pos = (23, 20)
     result = dispatcher._pick_best_station([1, 3], cart_pos, carts)
     assert result == 3
 
@@ -280,7 +280,7 @@ def test_pick_best_station_distance_tiebreak():
     tiles = build_map()
     dispatcher = Dispatcher(tiles)
     carts = []
-    cart_pos = (8, 11)
+    cart_pos = (22, 11)
     result = dispatcher._pick_best_station([1, 3], cart_pos, carts)
     assert result == 1
 
@@ -295,7 +295,7 @@ def test_pick_best_station_skips_full():
         c.state = CartState.PICKING
         c.carried_by = None
         carts.append(c)
-    cart_pos = (8, 11)
+    cart_pos = (22, 11)
     result = dispatcher._pick_best_station([1, 3], cart_pos, carts)
     assert result == 3
 
@@ -304,11 +304,11 @@ def test_nearest_agv_assignment():
     tiles = build_map()
     graph = build_graph(tiles)
     dispatcher = Dispatcher(tiles)
-    cart = Cart((0, 7))
+    cart = Cart((14, 7))
     cart.state = CartState.SPAWNED
     carts = [cart]
-    agv_far = AGV((5, 0))
-    agv_near = AGV((1, 7))
+    agv_far = AGV((19, 0))
+    agv_near = AGV((15, 7))
     agvs = [agv_far, agv_near]
     dispatcher.update(carts, agvs, graph, tiles)
     assert agv_near.current_job is not None
@@ -322,16 +322,16 @@ def test_idle_agv_excluded_from_blocked_set():
     """Idle AGVs should NOT block pathfinding — they get nudged on contact."""
     tiles = build_map()
     graph = build_graph(tiles)
-    # Place idle AGV at (1, 6) — on the only path to cart spawn (0, 7)
-    agv_idle = AGV((1, 6))
+    # Place idle AGV at (15, 6) — on the only path to cart spawn (14, 7)
+    agv_idle = AGV((15, 6))
     agv_idle.state = AGVState.IDLE
-    # Place working AGV at (3, 7) trying to reach (0, 7)
-    agv_worker = AGV((3, 7))
+    # Place working AGV at (17, 7) trying to reach (14, 7)
+    agv_worker = AGV((17, 7))
     agvs = [agv_idle, agv_worker]
-    # With idle exclusion, worker should find path through (1, 6)
+    # With idle exclusion, worker should find path through (15, 6)
     blocked = {a.pos for a in agvs if a is not agv_worker and a.state != AGVState.IDLE}
-    assert (1, 6) not in blocked  # idle AGV not in blocked set
-    route = astar(graph, agv_worker.pos, (0, 7), blocked=blocked, tiles=tiles)
+    assert (15, 6) not in blocked  # idle AGV not in blocked set
+    route = astar(graph, agv_worker.pos, (14, 7), blocked=blocked, tiles=tiles)
     assert route is not None
 
 
@@ -371,17 +371,17 @@ def test_cancel_stuck_pickup_with_carrying_cart():
     tiles = build_map()
     graph = build_graph(tiles)
     dispatcher = Dispatcher(tiles)
-    cart = Cart((0, 7))
+    cart = Cart((14, 7))
     cart.state = CartState.SPAWNED
-    agv = AGV((5, 7))
+    agv = AGV((19, 7))
     # Simulate the reservation: carrying_cart set but not yet physically picked up
     agv.carrying_cart = cart
     agv.state = AGVState.MOVING_TO_PICKUP
     agv.is_blocked = True
     agv.blocked_timer = 60.0  # well past JOB_CANCEL_TIMEOUT
-    agv.path = [(5, 7), (4, 7)]
+    agv.path = [(19, 7), (18, 7)]
     agv.path_index = 0
-    job = Job(JobType.PICKUP_TO_BOX_DEPOT, cart, (15, 5))
+    job = Job(JobType.PICKUP_TO_BOX_DEPOT, cart, (29, 5))
     job.assigned_agv = agv
     agv.current_job = job
     dispatcher.active_jobs.append(job)
@@ -400,14 +400,14 @@ def test_failed_agvs_skips_previous_failures():
     tiles = build_map()
     graph = build_graph(tiles)
     dispatcher = Dispatcher(tiles)
-    cart = Cart((0, 7))
+    cart = Cart((14, 7))
     cart.state = CartState.SPAWNED
     carts = [cart]
-    agv_near = AGV((1, 7))  # nearest but will be in failed_agvs
-    agv_far = AGV((5, 0))   # farther but eligible
+    agv_near = AGV((15, 7))  # nearest but will be in failed_agvs
+    agv_far = AGV((19, 0))   # farther but eligible
     agvs = [agv_near, agv_far]
     # Create a pending job with agv_near blacklisted
-    job = Job(JobType.PICKUP_TO_BOX_DEPOT, cart, (15, 5))
+    job = Job(JobType.PICKUP_TO_BOX_DEPOT, cart, (29, 5))
     job.failed_agvs.add(agv_near.agv_id)
     dispatcher.pending_jobs.append(job)
     dispatcher._assign_jobs(agvs, graph, tiles)
@@ -424,19 +424,19 @@ def test_backpressure_reduces_slots():
     # Create 3 blocked AGVs
     agvs = []
     for i in range(3):
-        agv = AGV((i + 1, 7))
+        agv = AGV((i + 15, 7))
         agv.is_blocked = True
         agv.state = AGVState.MOVING
-        agv.path = [(i + 1, 7), (i + 2, 7)]
+        agv.path = [(i + 15, 7), (i + 16, 7)]
         agv.path_index = 0
         agvs.append(agv)
     # Create an idle AGV and a pending job
-    idle_agv = AGV((5, 0))
+    idle_agv = AGV((19, 0))
     agvs.append(idle_agv)
-    cart = Cart((0, 7))
+    cart = Cart((14, 7))
     cart.state = CartState.SPAWNED
     carts = [cart]
-    job = Job(JobType.PICKUP_TO_BOX_DEPOT, cart, (15, 5))
+    job = Job(JobType.PICKUP_TO_BOX_DEPOT, cart, (29, 5))
     dispatcher.pending_jobs.append(job)
     # With 3 blocked, slots = 12 - 0 active - 3//3 = 11 — still enough
     dispatcher._assign_jobs(agvs, graph, tiles)
@@ -468,17 +468,17 @@ def test_retarget_cap_never_drops_cart_on_highway():
     tiles = build_map()
     graph = build_graph(tiles)
     dispatcher = Dispatcher(tiles)
-    cart = Cart((9, 20))  # col 9 = left highway
+    cart = Cart((23, 20))  # col 9 = left highway
     cart.state = CartState.IN_TRANSIT
-    agv = AGV((9, 20))
+    agv = AGV((23, 20))
     agv.carrying_cart = cart
     cart.carried_by = agv
     agv.state = AGVState.MOVING_TO_DROPOFF
     agv.is_blocked = True
     agv.blocked_timer = 60.0
-    agv.path = [(9, 20), (9, 21)]
+    agv.path = [(23, 20), (23, 21)]
     agv.path_index = 0
-    job = Job(JobType.MOVE_TO_BUFFER, cart, (10, 20))
+    job = Job(JobType.MOVE_TO_BUFFER, cart, (24, 20))
     job.assigned_agv = agv
     job.retarget_count = 3  # already at limit
     agv.current_job = job
@@ -504,7 +504,7 @@ def test_packoff_capacity_check_uses_physical_occupancy():
         c.process_timer = 10.0
         carts.append(c)
     # Create a waiting cart that wants pack-off
-    waiting = Cart((8, 9))
+    waiting = Cart((22, 9))
     waiting.state = CartState.WAITING_FOR_STATION
     from agv_simulation.models import Order
     waiting.order = Order()
@@ -540,7 +540,7 @@ def test_orphaned_waiting_cart_gets_rerouted_to_box_depot():
     tiles = build_map()
     graph = build_graph(tiles)
     dispatcher = Dispatcher(tiles)
-    orphan = Cart((8, 9))
+    orphan = Cart((22, 9))
     orphan.state = CartState.WAITING_FOR_STATION
     orphan.order = None
     dispatcher._create_jobs([orphan], [], graph, tiles)
@@ -555,7 +555,7 @@ def test_packed_waiting_cart_returns_home_not_back_to_packoff():
     tiles = build_map()
     graph = build_graph(tiles)
     dispatcher = Dispatcher(tiles)
-    cart = Cart((8, 9))
+    cart = Cart((22, 9))
     cart.state = CartState.WAITING_FOR_STATION
     cart.order = Order()
     cart.order.stations_to_visit = [1]
@@ -573,21 +573,21 @@ def test_giveup_drop_releases_cart_in_place():
     tiles = build_map()
     graph = build_graph(tiles)
     dispatcher = Dispatcher(tiles)
-    agv = AGV((10, 24))  # parking tile — highway drops are forbidden
-    cart = Cart((10, 24))
+    agv = AGV((24, 24))  # parking tile — highway drops are forbidden
+    cart = Cart((24, 24))
     cart.carried_by = agv
     cart.state = CartState.IN_TRANSIT_TO_PICK
     agv.carrying_cart = cart
     agv.state = AGVState.MOVING_TO_DROPOFF
     agv.is_blocked = True
     agv.blocked_timer = 100.0
-    job = Job(JobType.MOVE_TO_PICK, cart, (8, 12), station_id="S1")
+    job = Job(JobType.MOVE_TO_PICK, cart, (22, 12), station_id="S1")
     job.retarget_count = 3
     job.assigned_agv = agv
     agv.current_job = job
     dispatcher.active_jobs.append(job)
     dispatcher._cancel_stuck_jobs([agv], [cart], graph, tiles)
-    assert cart.pos == (10, 24)
+    assert cart.pos == (24, 24)
     assert cart.carried_by is None
     assert agv.carrying_cart is None
 
@@ -610,7 +610,7 @@ def test_graph_fully_mutually_reachable():
 
     tiles = build_map()
     graph = build_graph(tiles)
-    start = (1, 7)
+    start = (15, 7)
 
     def bfs(adjacency, src):
         seen = {src}

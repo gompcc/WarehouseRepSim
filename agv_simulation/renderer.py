@@ -95,42 +95,42 @@ def draw_labels(
     ts = TILE_SIZE
 
     # Left-side station labels
-    label("S1", int(5.5 * ts + ts / 2), 12 * ts + ts // 2, font_md)
-    capacity_label("S1", int(5.5 * ts + ts / 2), 13 * ts + ts // 2)
-    label("S2", int(13.5 * ts + ts / 2), int(18 * ts + ts / 2), font_md)
-    capacity_label("S2", int(13.5 * ts + ts / 2), int(19 * ts + ts / 2))
-    label("S3", int(5.5 * ts + ts / 2), int(24 * ts + ts / 2), font_md)
-    capacity_label("S3", int(5.5 * ts + ts / 2), int(25 * ts + ts / 2))
-    label("S4", int(13.5 * ts + ts / 2), int(30 * ts + ts / 2), font_md)
-    capacity_label("S4", int(13.5 * ts + ts / 2), int(31 * ts + ts / 2))
+    label("S1", int(19.5 * ts + ts / 2), 12 * ts + ts // 2, font_md)
+    capacity_label("S1", int(19.5 * ts + ts / 2), 13 * ts + ts // 2)
+    label("S2", int(27.5 * ts + ts / 2), int(18 * ts + ts / 2), font_md)
+    capacity_label("S2", int(27.5 * ts + ts / 2), int(19 * ts + ts / 2))
+    label("S3", int(19.5 * ts + ts / 2), int(24 * ts + ts / 2), font_md)
+    capacity_label("S3", int(19.5 * ts + ts / 2), int(25 * ts + ts / 2))
+    label("S4", int(27.5 * ts + ts / 2), int(30 * ts + ts / 2), font_md)
+    capacity_label("S4", int(27.5 * ts + ts / 2), int(31 * ts + ts / 2))
 
     # Right-side station labels
-    label("S5", 42 * ts + ts // 2, 35 * ts + ts // 2, font_md)
-    capacity_label("S5", 42 * ts + ts // 2, 36 * ts + ts // 2)
-    label("S6", 34 * ts + ts // 2, 29 * ts + ts // 2, font_md)
-    capacity_label("S6", 34 * ts + ts // 2, 30 * ts + ts // 2)
-    label("S7", 42 * ts + ts // 2, 23 * ts + ts // 2, font_md)
-    capacity_label("S7", 42 * ts + ts // 2, 24 * ts + ts // 2)
-    label("S8", 34 * ts + ts // 2, 17 * ts + ts // 2, font_md)
-    capacity_label("S8", 34 * ts + ts // 2, 18 * ts + ts // 2)
-    label("S9", 42 * ts + ts // 2, 11 * ts + ts // 2, font_md)
-    capacity_label("S9", 42 * ts + ts // 2, 12 * ts + ts // 2)
+    label("S5", 56 * ts + ts // 2, 35 * ts + ts // 2, font_md)
+    capacity_label("S5", 56 * ts + ts // 2, 36 * ts + ts // 2)
+    label("S6", 48 * ts + ts // 2, 29 * ts + ts // 2, font_md)
+    capacity_label("S6", 48 * ts + ts // 2, 30 * ts + ts // 2)
+    label("S7", 56 * ts + ts // 2, 23 * ts + ts // 2, font_md)
+    capacity_label("S7", 56 * ts + ts // 2, 24 * ts + ts // 2)
+    label("S8", 48 * ts + ts // 2, 17 * ts + ts // 2, font_md)
+    capacity_label("S8", 48 * ts + ts // 2, 18 * ts + ts // 2)
+    label("S9", 56 * ts + ts // 2, 11 * ts + ts // 2, font_md)
+    capacity_label("S9", 56 * ts + ts // 2, 12 * ts + ts // 2)
 
     # Box Depot
-    label("Box Depot", 19 * ts + ts // 2, int(2.5 * ts), font_md)
-    capacity_label("Box_Depot", 19 * ts + ts // 2, int(3.5 * ts))
+    label("Box Depot", 33 * ts + ts // 2, int(2.5 * ts), font_md)
+    capacity_label("Box_Depot", 33 * ts + ts // 2, int(3.5 * ts))
 
     # Pack-off
-    label("Packoff Conveyor", int(50.5 * ts), int(1.5 * ts), font_md)
-    capacity_label("Pack_off", int(50.5 * ts), int(2.5 * ts))
+    label("Packoff Conveyor", int(64.5 * ts), int(1.5 * ts), font_md)
+    capacity_label("Pack_off", int(64.5 * ts), int(2.5 * ts))
 
     # Section labels
-    label("South Pallets", 5 * ts, 36 * ts, font_sm, bg=False)
-    label("North Pallets", 14 * ts, 36 * ts, font_sm, bg=False)
-    label("North Highway", 35 * ts, NORTH_HWY_ROW * ts + ts // 2, font_sm, bg=False)
-    label("East Highway", 25 * ts, EAST_HWY_ROW * ts + ts // 2, font_sm, bg=False)
-    label("AGV Spawn", 5 * ts, 3 * ts, font_sm)
-    label("Cart Spawn", int(3 * ts), int(9.5 * ts), font_sm)
+    label("South Pallets", 19 * ts, 36 * ts, font_sm, bg=False)
+    label("North Pallets", 28 * ts, 36 * ts, font_sm, bg=False)
+    label("North Highway", 49 * ts, NORTH_HWY_ROW * ts + ts // 2, font_sm, bg=False)
+    label("East Highway", 39 * ts, EAST_HWY_ROW * ts + ts // 2, font_sm, bg=False)
+    label("AGV Spawn", 19 * ts, 3 * ts, font_sm)
+    label("Cart Spawn", int(17 * ts), int(9.5 * ts), font_sm)
 
 
 def draw_agv(surface: pygame.Surface, agv: AGV, font: pygame.font.Font) -> None:
@@ -169,7 +169,7 @@ def draw_cart(
         cx = cart.pos[0] * TILE_SIZE + TILE_SIZE // 2
         cy = cart.pos[1] * TILE_SIZE + TILE_SIZE // 2
 
-    w, h = 16, 10
+    w, h = TILE_SIZE - 4, TILE_SIZE * 5 // 8
     color = cart.get_color()
     rect = pygame.Rect(cx - w // 2, cy - h // 2, w, h)
     pygame.draw.rect(surface, color, rect, border_radius=2)
@@ -266,9 +266,10 @@ def draw_metrics_panel(
     panel_rect = pygame.Rect(px, 0, PANEL_WIDTH, MAP_HEIGHT)
     pygame.draw.rect(surface, PANEL_BG, panel_rect)
 
-    y = 10
-    line_h = 16
-    section_gap = 8
+    # Window is 640px tall since the aisle expansion — keep the panel compact
+    y = 8
+    line_h = 13
+    section_gap = 5
 
     def header(text: str) -> None:
         nonlocal y
