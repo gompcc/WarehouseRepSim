@@ -19,6 +19,7 @@ from .constants import (
     FPS, SPEED_STEPS,
     AGV_SPAWN_TILE, BOX_DEPOT_TIME,
     PRELOAD_CART_COUNT, PRELOAD_AGV_COUNT,
+    OPTIMAL_FLEET,
 )
 from .agv import AGV
 from .map_builder import verify_graph
@@ -288,9 +289,22 @@ def main() -> None:
                         i.label for i in STRATEGY_INFO if i.attr == clicked_toggle
                     )
                     state = "ON" if now_on else "OFF"
-                    strategy_events.append((env.sim_elapsed, f"{label} {state}"))
-                    logger.info("[Strategy] %s -> %s (t=%.0fs)",
-                                label, state, env.sim_elapsed)
+                    # Each strategy combo has its own optimal fleet — grow or
+                    # gracefully shrink the live fleet to match
+                    combo = (
+                        dispatcher.strategies.eta_reservations,
+                        dispatcher.strategies.global_assignment,
+                    )
+                    t_agvs, t_carts = OPTIMAL_FLEET.get(combo, (10, 25))
+                    env.retarget_fleet(t_agvs, t_carts)
+                    strategy_events.append((
+                        env.sim_elapsed,
+                        f"{label} {state} · fleet {t_agvs}A/{t_carts}C",
+                    ))
+                    logger.info(
+                        "[Strategy] %s -> %s (t=%.0fs) · fleet target %dA/%dC",
+                        label, state, env.sim_elapsed, t_agvs, t_carts,
+                    )
                     continue
                 if mx >= MAP_WIDTH:
                     continue

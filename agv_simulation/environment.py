@@ -98,6 +98,10 @@ class Environment:
         # (the driver loop publishes job targets via ``reserved_targets``).
         self.preload_remaining: int = 0
         self.auto_spawn: bool = False
+        # Graceful fleet shrink (GUI strategy toggles retarget the fleet):
+        # units retire only when safe — idle AGVs, order-less depot carts
+        self.agv_retire_pending: int = 0
+        self.cart_retire_pending: int = 0
         self.spawn_enabled: bool = True
         self._spawn_timer: float = 0.0
         self._initial_fill_done: bool = False
@@ -165,7 +169,80 @@ class Environment:
         )
         return agv
 
+    def retarget_fleet(self, target_agvs: int, target_carts: int) -> None:
+        """Grow or shrink the live fleet toward (target_agvs, target_carts).
+
+        Growth reuses the normal spawn pipeline (AGVs stream in single-file,
+        carts enter at the Box Depot). Shrinkage is graceful: queued spawns
+        are cancelled first, then surplus AGVs retire as they go idle and
+        surplus carts retire when order-less at the Box Depot — never
+        mid-job. Used by the GUI when a strategy toggle changes the
+        optimal fleet (constants.OPTIMAL_FLEET).
+        """
+        agv_total = (
+            len(self.agvs) + self.agv_preload_remaining - self.agv_retire_pending
+        )
+        delta = target_agvs - agv_total
+        if delta >= 0:
+            cancel = min(self.agv_retire_pending, delta)
+            self.agv_retire_pending -= cancel
+            self.agv_preload_remaining += delta - cancel
+        else:
+            need = -delta
+            cancel = min(self.agv_preload_remaining, need)
+            self.agv_preload_remaining -= cancel
+            self.agv_retire_pending += need - cancel
+
+        cart_total = (
+            len(self.carts) + self.preload_remaining - self.cart_retire_pending
+        )
+        delta = target_carts - cart_total
+        if delta >= 0:
+            cancel = min(self.cart_retire_pending, delta)
+            self.cart_retire_pending -= cancel
+            self.preload_remaining += delta - cancel
+        else:
+            need = -delta
+            cancel = min(self.preload_remaining, need)
+            self.preload_remaining -= cancel
+            self.cart_retire_pending += need - cancel
+
+        self._retire_tick()
+
+    def _retire_tick(self) -> None:
+        """Remove pending-retirement units the moment it is safe to."""
+        if self.agv_retire_pending > 0:
+            for agv in list(self.agvs):
+                if self.agv_retire_pending <= 0:
+                    break
+                if (
+                    agv.state == AGVState.IDLE
+                    and agv.current_job is None
+                    and agv.carrying_cart is None
+                ):
+                    self.agvs.remove(agv)
+                    self.agv_retire_pending -= 1
+                    self.events.record(
+                        self.sim_elapsed, "agv_retired", agv=agv.agv_id,
+                    )
+        if self.cart_retire_pending > 0:
+            for cart in list(self.carts):
+                if self.cart_retire_pending <= 0:
+                    break
+                if (
+                    cart.carried_by is None
+                    and cart.order is None
+                    and cart.state == CartState.AT_BOX_DEPOT
+                ):
+                    self.carts.remove(cart)
+                    self.cart_retire_pending -= 1
+                    self.events.record(
+                        self.sim_elapsed, "cart_retired", cart=cart.cart_id,
+                    )
+
     def _spawn_tick(self, dt: float) -> None:
+        if self.agv_retire_pending > 0 or self.cart_retire_pending > 0:
+            self._retire_tick()
         # AGVs: stream in as fast as the spawn tile clears.
         if self.agv_preload_remaining > 0:
             if self.spawn_agv():
