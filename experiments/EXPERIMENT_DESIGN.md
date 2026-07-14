@@ -56,10 +56,12 @@ Run budget: Section A = 4×5 + 4×3 = 32 runs; Section B = 8×5 + 3×5 = 55 runs
 
 ## 2. Section A — product layout (slotting)
 
-**Arms (4):** `sequential` (baseline), `aisle-proximal`, `fibonacci-rings`,
-`velocity` — the 4 toggleable slotting strategies, with normal-distributed
-SKU popularity active in **all** arms (popularity must not be a hidden
-difference between arms).
+**Arms (3):** `sequential` (baseline), `aisle_proximal`, `fibonacci` — the
+3 toggleable slotting strategies (`velocity` DELETED at user request,
+2026-07-14 — its 8h seed-42 result, 32.3 steady o/hr vs sequential 11.7,
+survives in `results/2pager_2026-07-14.md` as an upper-bound reference
+only), with normal-distributed SKU popularity active in **all** arms
+(popularity must not be a hidden difference between arms).
 
 **Matrix:** 4 strategies × 5 seeds at 10/25 (20 runs, decision set)
 + 4 strategies × 3 seeds (11, 42, 77) at 14/25 (12 runs, ranking-robustness
@@ -84,11 +86,14 @@ backlog on their OWN side of the highway; inter-station walk costs real
 time and counts busy; stats report `relocations`/`relocation_seconds`).
 GUI toggle: "Dynamic pickers" in the STRATEGIES panel.
 
-**Matrix:** 2 picker strategies × {sequential, velocity} slotting × 5 seeds
-at 10/25 (20 runs) — crossing matters because dynamic's value should be
-largest where zone workload is unbalanced (sequential: S3 99% busy vs S5
-2%; note S5 is on the *east* side so only S7/S9 can help it — the side
-constraint bounds what roaming can recover).
+**Matrix:** 2 picker strategies × {sequential, aisle_proximal} slotting ×
+5 seeds at 10/25 (20 runs) — crossing matters because dynamic's value
+should be largest where zone workload is unbalanced (sequential: S3 99%
+busy vs S5 2%; note S5 is on the *east* side so only S7/S9 can help it —
+the side constraint bounds what roaming can recover). Per-station picker
+counts are a further lever (GUI: click a station to hire), but keep them
+fixed at 1/station in this matrix — vary them in a follow-up staffing
+experiment, not mixed into A2.
 **Extra metrics:** relocations/hr, relocation_seconds fraction of busy,
 per-station busy CV (dynamic should compress it within each side).
 
@@ -155,7 +160,7 @@ number is one the reader can't act on.
   arm would erase the very effect under test. Freeze the constants; report
   each arm's realized `walk_mean_s` — the differences ARE the finding.
 - **F3 — Same fleet, capacities, and processing times everywhere.** Station
-  capacities are physical; if velocity slotting overloads one station, that
+  capacities are physical; if a slotting arm overloads one station, that
   imbalance is a real cost of that slotting — measure it (Fig 3), don't
   rebalance zones or capacities post hoc.
 - **F4 — Paired seeds, single-variable arms.** Same 5 seeds in every arm;
