@@ -35,11 +35,14 @@ COMMITTED through `3f27a16`. Tree was clean at handoff except `.claude/`.
       `order_completion_times` + `picker_stats["per_station"]`. Verified
       behavior-identical (seed-42 1h: 24 orders / 1568.4s avg cycle, exact
       match vs stashed pre-change code); 60 tests green.
-- [ ] **Placement visualization** — map colored by SKU popularity per
-      slotting strategy (show the fibonacci rings around the track) + bar
-      graph comparing avg picker walk time: sequential vs aisle-proximal vs
-      fibonacci (vs velocity). Use the dataviz skill for chart styling.
-      Also: GUI should display the active slotting strategy name.
+- [x] **Placement visualization** — DONE (2026-07-14):
+      `experiments/plot_placement.py` → `results/figures/` (PNGs gitignored,
+      regenerable): 2×2 popularity maps per slotting (velocity's hot-SKU
+      pull toward stations and fibonacci's track-edge rings both visible) +
+      walk-time bar chart (velocity 13.1 m/22 s ... fibonacci 18.0 m/29 s).
+      GUI now shows "Slotting: <name>" under STRATEGIES; stale
+      "picks/cart-visit μ4 σ2" overlay label replaced with
+      "lines/order: μ20 σ9". Verified via SDL dummy snapshot.
 - [ ] **Station/aisle zone color-coding (user request)** — each S station
       gets a color; each racking run's border colored by the station owning
       its slots, per face (N/S side of a run can differ; a face split

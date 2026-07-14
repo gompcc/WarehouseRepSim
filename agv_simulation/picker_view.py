@@ -15,7 +15,8 @@ from .constants import (
     LABEL_BG, OUTLINE_COLOR,
 )
 from .aisles import get_catalog
-from .picker import Picker, PICKS_PER_VISIT_MEAN, PICKS_PER_VISIT_SD
+from .picker import Picker
+from .constants import ORDER_LINES_MEAN, ORDER_LINES_SD
 
 if TYPE_CHECKING:
     from .picker import PickerManager
@@ -54,7 +55,7 @@ def draw_picker_info(
     lines = [
         "PICKERS (gating carts)" if manager.gating else "PICKERS (shadow mode)",
         f"{PICKERS_PER_STATION}/station · {PICKER_WALK_SPEED} m/s · grab {PICK_GRAB_TIME:.0f}s",
-        f"picks/cart-visit: μ{PICKS_PER_VISIT_MEAN:.0f} σ{PICKS_PER_VISIT_SD:.0f}",
+        f"lines/order: μ{ORDER_LINES_MEAN:.0f} σ{ORDER_LINES_SD:.0f}",
         f"walk/pick: μ{calib['mean_s']:.0f}s σ{calib['sd_s']:.0f}"
         f" (near {calib['near_p16_s']:.0f} / far {calib['far_p84_s']:.0f})",
         f"live: {live['picks_done']} picks"

@@ -428,6 +428,16 @@ def draw_metrics_panel(
                 px + 8, y - 2, PANEL_WIDTH - 16, 16,
             )
             y += 17
+        # Active slotting strategy (fixed per run — set at catalog init)
+        from .aisles import get_catalog
+        try:
+            slotting_name = get_catalog().slotting
+        except Exception:
+            slotting_name = None
+        if slotting_name:
+            txt = font_sm.render(f"  Slotting: {slotting_name}", True, PANEL_TEXT)
+            surface.blit(txt, (px + 8, y))
+            y += line_h
     y += section_gap
 
     # 6. CONSTRAINT (what's holding back throughput)
