@@ -1,10 +1,10 @@
 # Dispatcher Optimization Log
 
 ## Current Record
-- **Peak throughput**: 62.0 orders/hr
-- **Config**: 14 AGVs, 25 carts, 7200s duration
-- **Date**: 2026-04-01
-- **Commit**: b10ecfa (Sidetrack overflow lanes)
+- **Peak throughput**: 89.5 orders/hr (pre-aisle-redesign map)
+- **Config**: 16 AGVs, 25 carts, 28800s duration
+- **Date**: 2026-07-14
+- **Commit**: a85216d (Environment separation + deadlock-trap fixes, iterations 18-19)
 
 ## Architecture Constraints (do not try to change these)
 - Highway cols 9/38 are single-lane, anti-clockwise loop — fundamental map constraint
