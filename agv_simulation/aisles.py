@@ -17,8 +17,10 @@ Slotting strategies (toggle via ``init_catalog(tiles, slotting=...)`` /
 
 - ``sequential``      — SKU k at the k-th location, left→right, top→down.
 - ``aisle_proximal``  — same SKUs per aisle as sequential, but within each
-                        aisle the popular ones sit nearest the slot's own
-                        pick station (station↔SKU ownership unchanged).
+                        aisle the popular ones sit nearest the highway /
+                        station end; an aisle with a station at either end
+                        splits in two with the least popular SKUs in the
+                        middle (station↔SKU ownership unchanged).
 - ``fibonacci``       — the highway ring is the "center": locations are
                         ranked by distance to the ring and filled in shells
                         whose sizes grow like Fibonacci numbers, most popular
@@ -26,10 +28,6 @@ Slotting strategies (toggle via ``init_catalog(tiles, slotting=...)`` /
                         invert since their middles are farthest from the
                         ring). Within a shell order stays geometric, spreading
                         hot SKUs around the whole loop.
-- ``velocity``        — global greedy lower bound: locations sorted by walk
-                        distance from their zone station; most popular SKU
-                        gets the cheapest location.
-
 Zoning (which station's picker owns a location) is purely geometric and does
 NOT change with slotting; what changes is which SKU sits where — and hence
 each station's demand mix and walking distances.
@@ -56,7 +54,7 @@ from .constants import (
 
 logger = logging.getLogger(__name__)
 
-SLOTTING_STRATEGIES = ("sequential", "aisle_proximal", "fibonacci", "velocity")
+SLOTTING_STRATEGIES = ("sequential", "aisle_proximal", "fibonacci")
 
 # ----------------------------------------------------------------------
 # Walk-time calibration (user spec, 2026-07-14): fitted ONCE against the
@@ -187,7 +185,6 @@ class Catalog:
             "sequential": _assign_sequential,
             "aisle_proximal": _assign_aisle_proximal,
             "fibonacci": _assign_fibonacci,
-            "velocity": _assign_velocity,
         }[slotting]
         sku_to_loc: dict[int, Location] = assign(
             self.locations, self._loc_station, self._loc_walk,
@@ -427,15 +424,19 @@ def _assign_sequential(locations, loc_station, loc_walk) -> dict[int, Location]:
 
 def _assign_aisle_proximal(locations, loc_station, loc_walk) -> dict[int, Location]:
     """Sequential's SKUs per (aisle, station) subgroup, re-ordered inside the
-    subgroup so the most popular SKU takes the location closest to its own
-    pick station. Station↔SKU ownership is identical to sequential."""
+    subgroup so the most popular SKU sits nearest the subgroup's station end
+    of the aisle — i.e. nearest the highway, since stations hug the ring.
+    An aisle with a station at either end is split at the zone boundary and
+    each half fills popular-first from its own end, so the least popular
+    SKUs meet in the middle (user spec 2026-07-14). Station↔SKU ownership
+    is identical to sequential."""
     groups: dict[tuple, list[Location]] = {}
     for loc in locations:
         groups.setdefault((loc.walkway_id, loc_station[loc.index]), []).append(loc)
     out: dict[int, Location] = {}
     for group in groups.values():
         skus = sorted(loc.index for loc in group)         # popularity order
-        by_dist = sorted(group, key=lambda l: loc_walk[l.index])
+        by_dist = sorted(group, key=lambda l: (loc_walk[l.index], l.index))
         for sku, loc in zip(skus, by_dist):
             out[sku] = loc
     return out
@@ -459,12 +460,6 @@ def _assign_fibonacci(locations, loc_station, loc_walk) -> dict[int, Location]:
             sku += 1
     return out
 
-
-def _assign_velocity(locations, loc_station, loc_walk) -> dict[int, Location]:
-    """Global greedy ABC slotting: most popular SKU gets the location with
-    the shortest walk from its zone station. The walking lower bound."""
-    by_cost = sorted(locations, key=lambda l: (loc_walk[l.index], l.index))
-    return {sku: loc for sku, loc in zip(range(1, NUM_SKUS + 1), by_cost)}
 
 
 # ----------------------------------------------------------------------

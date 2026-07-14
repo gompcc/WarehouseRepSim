@@ -2,7 +2,6 @@
 
 from __future__ import annotations
 
-import bisect
 from typing import TYPE_CHECKING
 
 import pygame
@@ -17,11 +16,9 @@ from .constants import (
     PANEL_GREEN, PANEL_YELLOW, PANEL_RED,
     NORTH_HWY_ROW, EAST_HWY_ROW,
 )
+from .metrics import rolling_rate, ROLLING_WINDOW
 from .models import STATIONS
 from .strategies import STRATEGY_INFO
-
-# Rolling window for the live orders/hr graph (sim-seconds)
-THROUGHPUT_WINDOW = 900.0
 
 if TYPE_CHECKING:
     from .agv import AGV
@@ -41,6 +38,18 @@ ZONE_COLORS: dict[str, tuple[int, int, int]] = {
     "S8": (235, 104, 52),   # orange
     "S9": (14, 124, 134),   # teal
 }
+
+# One fixed curve/label color per slotting strategy (comparison graph)
+SLOTTING_COLORS: dict[str, tuple[int, int, int]] = {
+    "sequential": PANEL_GREEN,
+    "aisle_proximal": (95, 175, 240),   # blue
+    "fibonacci": (235, 150, 60),        # orange
+}
+
+
+def _dim(color: tuple[int, int, int]) -> tuple[int, int, int]:
+    """Dimmed variant for finished runs' curves."""
+    return tuple(int(v * 0.55) for v in color)
 
 
 def draw_zone_borders(surface: pygame.Surface) -> None:
@@ -64,6 +73,43 @@ def draw_zone_borders(surface: pygame.Surface) -> None:
             round(x0 * TILE_SIZE), y, round((x1 - x0) * TILE_SIZE), 3,
         )
         pygame.draw.rect(surface, color, rect)
+
+
+# SKU-number overlay: (catalog id, pre-rendered surface). Placement is
+# static per run, so the ~2000 tiny labels render once per world build.
+_sku_overlay: tuple[int, pygame.Surface] | None = None
+
+SKU_NUMBER_COLOR = (150, 150, 158)  # light grey
+
+
+def draw_sku_numbers(surface: pygame.Surface) -> None:
+    """Light-grey SKU ids at their rack slots so any slotting strategy can
+    be visually verified (SKU id = popularity rank; 1 is hottest).
+
+    Each rack tile holds two rack levels per face — the hotter (lower) SKU
+    of the pair is shown: N-face label in the tile's top half, S-face in
+    the bottom half."""
+    global _sku_overlay
+    from .aisles import get_catalog
+    try:
+        cat = get_catalog()
+    except Exception:
+        return
+    if _sku_overlay is None or _sku_overlay[0] != id(cat):
+        font_xs = pygame.font.SysFont("Arial", 9)
+        overlay = pygame.Surface((MAP_WIDTH, MAP_HEIGHT), pygame.SRCALPHA)
+        best: dict[tuple[int, int, str], int] = {}  # (col, run_row, face) -> hottest sku
+        for sku, slot in cat.slots.items():
+            key = (int(round(slot.x)), slot.run_row, slot.face)
+            if sku < best.get(key, 1 << 30):
+                best[key] = sku
+        for (col, run_row, face), sku in best.items():
+            txt = font_xs.render(str(sku), True, SKU_NUMBER_COLOR)
+            x = col * TILE_SIZE + (TILE_SIZE - txt.get_width()) // 2
+            y = run_row * TILE_SIZE + (1 if face == "N" else TILE_SIZE - txt.get_height() + 1)
+            overlay.blit(txt, (x, y))
+        _sku_overlay = (id(cat), overlay)
+    surface.blit(_sku_overlay[1], (0, 0))
 
 
 def draw_tile(surface: pygame.Surface, tile) -> None:
@@ -515,16 +561,23 @@ def draw_metrics_panel(
                 px + 8, y - 2, PANEL_WIDTH - 16, 16,
             )
             y += 17
-        # Active slotting strategy (fixed per run — set at catalog init)
+        # Slotting strategy: clicking cycles to the next arm and RESTARTS
+        # the sim (products move, so the world must rebuild)
         from .aisles import get_catalog
         try:
             slotting_name = get_catalog().slotting
         except Exception:
             slotting_name = None
         if slotting_name:
-            txt = font_sm.render(f"  Slotting: {slotting_name}", True, PANEL_TEXT)
+            color = SLOTTING_COLORS.get(slotting_name, PANEL_TEXT)
+            txt = font_sm.render(f"  Slotting: {slotting_name}", True, color)
             surface.blit(txt, (px + 8, y))
-            y += line_h
+            hint = font_sm.render("(click: next+restart)", True, PANEL_SEPARATOR)
+            surface.blit(hint, (px + PANEL_WIDTH - hint.get_width() - 8, y))
+            toggle_rects["slotting_cycle"] = pygame.Rect(
+                px + 8, y - 2, PANEL_WIDTH - 16, 16,
+            )
+            y += 17
     y += section_gap
 
     # 6. CONSTRAINT (what's holding back throughput)
@@ -581,52 +634,59 @@ def draw_throughput_strip(
     dispatcher: Dispatcher | None,
     sim_elapsed: float,
     strategy_events: list[tuple[float, str]] | None = None,
+    picks_history: dict[str, list[tuple[float, float]]] | None = None,
 ) -> None:
-    """Live orders/hr graph in the strip under the map.
+    """Per-slotting picks/hr comparison graph in the strip under the map.
 
-    Rolling ``THROUGHPUT_WINDOW`` rate over the whole run so far, with a
-    vertical marker each time a strategy toggle is flipped — the visual
-    proof of a toggle's throughput impact.
+    One rolling-``ROLLING_WINDOW`` curve per slotting strategy, all runs
+    t=0-aligned on shared axes: finished runs dimmed, the live run bright.
+    Yellow markers flag dispatch-strategy toggles in the current run.
     """
     strip = pygame.Rect(0, MAP_HEIGHT, MAP_WIDTH, THROUGHPUT_STRIP_H)
     pygame.draw.rect(surface, PANEL_BG, strip)
     pygame.draw.line(surface, PANEL_SEPARATOR, (0, MAP_HEIGHT), (MAP_WIDTH, MAP_HEIGHT))
 
     title = font_sm.render(
-        f"THROUGHPUT  (orders/hr, rolling {int(THROUGHPUT_WINDOW / 60)}min)",
+        f"PICKS/HR by slotting  (rolling {int(ROLLING_WINDOW / 60)}min)",
         True, PANEL_HEADER,
     )
     surface.blit(title, (10, MAP_HEIGHT + 4))
 
-    if dispatcher is None or sim_elapsed < 120.0:
+    from .aisles import get_catalog
+    try:
+        current_name = get_catalog().slotting
+    except Exception:
+        current_name = None
+
+    curves: list[tuple[str, list[tuple[float, float]]]] = []
+    for name, series in (picks_history or {}).items():
+        pts = rolling_rate(series)
+        if len(pts) >= 2:
+            curves.append((name, pts))
+    # draw the live run last (on top)
+    curves.sort(key=lambda c: c[0] == current_name)
+
+    if not curves:
         txt = font_sm.render("collecting data…", True, PANEL_TEXT)
         surface.blit(txt, (10, MAP_HEIGHT + 34))
         return
 
-    times = dispatcher.order_completion_times  # chronological
     margin_l, margin_r, margin_t, margin_b = 36, 70, 18, 12
     gx = margin_l
     gy = MAP_HEIGHT + margin_t
     gw = MAP_WIDTH - margin_l - margin_r
     gh = THROUGHPUT_STRIP_H - margin_t - margin_b
 
-    n_samples = min(240, max(2, int(sim_elapsed / 30)))
-    rates: list[float] = []
-    for i in range(n_samples):
-        t = sim_elapsed * (i + 1) / n_samples
-        lo = bisect.bisect_right(times, t - THROUGHPUT_WINDOW)
-        hi = bisect.bisect_right(times, t)
-        window = min(t, THROUGHPUT_WINDOW)
-        rates.append((hi - lo) / (window / 3600.0) if window > 0 else 0.0)
+    x_max = max(pts[-1][0] for _, pts in curves)
+    max_rate = max(max(r for _, r in pts) for _, pts in curves) * 1.15
+    max_rate = max(max_rate, 50.0)
 
-    max_rate = max(max(rates) * 1.15, 20.0)
-
-    def to_xy(i: int, rate: float) -> tuple[int, int]:
-        x = gx + int(gw * (i + 1) / n_samples)
-        y_px = gy + gh - int(gh * rate / max_rate)
+    def to_xy(t: float, rate: float) -> tuple[int, int]:
+        x = gx + int(gw * min(t / x_max, 1.0))
+        y_px = gy + gh - int(gh * min(rate / max_rate, 1.0))
         return (x, y_px)
 
-    # Axis + gridline
+    # Axis + labels
     pygame.draw.line(surface, PANEL_SEPARATOR, (gx, gy), (gx, gy + gh))
     pygame.draw.line(surface, PANEL_SEPARATOR, (gx, gy + gh), (gx + gw, gy + gh))
     top_lbl = font_sm.render(f"{max_rate:.0f}", True, PANEL_TEXT)
@@ -634,27 +694,49 @@ def draw_throughput_strip(
     zero_lbl = font_sm.render("0", True, PANEL_TEXT)
     surface.blit(zero_lbl, (gx - zero_lbl.get_width() - 4, gy + gh - 6))
 
-    # Strategy toggle markers
+    # Dispatch-toggle markers (current run's sim times)
     for t_ev, label in (strategy_events or []):
-        if t_ev <= 0 or t_ev > sim_elapsed:
+        if t_ev <= 0 or t_ev > x_max:
             continue
-        ex = gx + int(gw * t_ev / sim_elapsed)
+        ex = gx + int(gw * t_ev / x_max)
         pygame.draw.line(surface, PANEL_YELLOW, (ex, gy), (ex, gy + gh))
         ev_txt = font_sm.render(label, True, PANEL_YELLOW)
         surface.blit(ev_txt, (min(ex + 3, gx + gw - ev_txt.get_width()), gy - 14))
 
-    # Rate curve
-    points = [to_xy(i, r) for i, r in enumerate(rates)]
-    if len(points) >= 2:
-        pygame.draw.lines(surface, PANEL_GREEN, False, points, 2)
+    current_rate: float | None = None
+    for name, pts in curves:
+        base = SLOTTING_COLORS.get(name, PANEL_TEXT)
+        is_live = name == current_name
+        color = base if is_live else _dim(base)
+        points = [to_xy(t, r) for t, r in pts]
+        if len(points) >= 2:
+            pygame.draw.lines(surface, color, False, points, 2 if is_live else 1)
+        if is_live:
+            current_rate = pts[-1][1]
 
-    # Current rate, big, at right
-    current = rates[-1] if rates else 0.0
-    cur_txt = font_sm.render(f"now: {current:.1f}/hr", True, PANEL_GREEN)
-    surface.blit(cur_txt, (gx + gw + 6, gy + 2))
-    stats = dispatcher.get_throughput_stats(sim_elapsed)
-    avg_txt = font_sm.render(f"avg: {stats['per_hour']:.1f}/hr", True, PANEL_TEXT)
-    surface.blit(avg_txt, (gx + gw + 6, gy + 18))
+    # Legend (top-right of the plot area), live entry bright
+    lx = gx + gw - 4
+    for name, _ in reversed(curves):
+        base = SLOTTING_COLORS.get(name, PANEL_TEXT)
+        col = base if name == current_name else _dim(base)
+        lbl = font_sm.render(name, True, col)
+        lx -= lbl.get_width()
+        surface.blit(lbl, (lx, gy - 14))
+        pygame.draw.rect(surface, col, pygame.Rect(lx - 10, gy - 9, 7, 3))
+        lx -= 16
+
+    # Current-run readouts at right
+    live_color = SLOTTING_COLORS.get(current_name or "", PANEL_TEXT)
+    if current_rate is not None:
+        cur_txt = font_sm.render(f"now: {current_rate:.0f}/hr", True, live_color)
+        surface.blit(cur_txt, (gx + gw + 6, gy + 2))
+    series = (picks_history or {}).get(current_name or "", [])
+    if series and series[-1][0] > 0:
+        t_last, picks_last = series[-1]
+        avg_txt = font_sm.render(
+            f"avg: {picks_last / (t_last / 3600.0):.0f}/hr", True, PANEL_TEXT,
+        )
+        surface.blit(avg_txt, (gx + gw + 6, gy + 18))
 
 
 def render(
@@ -672,6 +754,7 @@ def render(
     auto_spawn: bool = False,
     strategy_events: list[tuple[float, str]] | None = None,
     pickers=None,  # PickerManager | None — shadow-mode pickers (PRD §14.9)
+    picks_history: dict[str, list[tuple[float, float]]] | None = None,
 ) -> dict[str, pygame.Rect]:
     """Full frame render; returns clickable strategy-toggle hitboxes."""
     screen.fill(BG_COLOR)
@@ -693,6 +776,10 @@ def render(
     # Station zone ownership: colored racking-run borders (stations wear
     # the same color, so no legend)
     draw_zone_borders(screen)
+
+    # Light-grey SKU numbers at their slots — visual proof of the active
+    # slotting strategy's placement
+    draw_sku_numbers(screen)
 
     # Station tile color overlay based on fill rate
     station_fill = dispatcher._station_fill_cache if dispatcher else None
@@ -744,6 +831,7 @@ def render(
     draw_throughput_strip(
         screen, font_sm, dispatcher, sim_elapsed,
         strategy_events=strategy_events,
+        picks_history=picks_history,
     )
 
     return draw_metrics_panel(

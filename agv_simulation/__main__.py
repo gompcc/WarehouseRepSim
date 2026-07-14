@@ -22,9 +22,11 @@ from .constants import (
     OPTIMAL_FLEET,
 )
 from .agv import AGV
+from .aisles import SLOTTING_STRATEGIES
 from .map_builder import verify_graph
 from .environment import Environment
 from .dispatcher import Dispatcher
+from .headless import _reset_id_counters
 from .models import set_order_seed
 from .renderer import render
 from .strategies import STRATEGY_INFO
@@ -34,6 +36,27 @@ logger = logging.getLogger(__name__)
 # Fixed order-stream seed so GUI sessions are comparable with headless A/B
 # runs (same demand every session; toggle strategies mid-run to compare).
 GUI_ORDER_SEED = 42
+
+# Sampling cadence for the per-slotting picks/hr comparison curves (sim-s).
+PICKS_SAMPLE_INTERVAL = 60.0
+
+
+def _build_world(
+    slotting: str,
+    strategies,
+    picker_strategy: str,
+    fleet_target: tuple[int, int],
+) -> tuple[Environment, Dispatcher]:
+    """Fresh deterministic world. Resetting the ID counters and re-seeding
+    means order N is byte-identical in every world, so per-slotting runs
+    face the same demand (the F1 fairness rule) and their curves compare."""
+    _reset_id_counters()
+    set_order_seed(GUI_ORDER_SEED)
+    env = Environment(slotting=slotting, picker_strategy=picker_strategy)
+    verify_graph(env.graph, env.tiles)
+    dispatcher = Dispatcher(env.tiles, strategies=strategies, pickers=env.pickers)
+    env.agv_preload_remaining, env.preload_remaining = fleet_target
+    return env, dispatcher
 
 
 def main() -> None:
@@ -51,7 +74,11 @@ def main() -> None:
     font_sm = pygame.font.SysFont("Arial", 11)
     font_md = pygame.font.SysFont("Arial", 14, bold=True)
 
-    env = Environment()
+    # Fair spawn model: depot fills with carts at t=0 (then 1 per 5 sim-s
+    # into free un-targeted depot tiles); AGVs stream in single-file
+    # through the spawn tile.
+    fleet_target: tuple[int, int] = (PRELOAD_AGV_COUNT, PRELOAD_CART_COUNT)
+    env, dispatcher = _build_world("sequential", None, "static", fleet_target)
     tiles = env.tiles
     graph = env.graph
 
@@ -61,13 +88,9 @@ def main() -> None:
     logger.info("Controls: A=spawn AGV, C=spawn Cart, P=pickup cart, R=return, TAB=cycle, Click=send, D=debug")
     logger.info("          Space=pause, T=auto-spawn, Up/Down=speed steps")
     logger.info("Press Q or close window to quit.")
-
-    verify_graph(graph, tiles)
-
-    set_order_seed(GUI_ORDER_SEED)
     logger.info("Order stream seeded (%d) — comparable across sessions", GUI_ORDER_SEED)
-
-    dispatcher = Dispatcher(tiles, pickers=env.pickers)
+    logger.info("Streaming %d AGVs via spawn tile; spawning %d carts at Box Depot",
+                PRELOAD_AGV_COUNT, PRELOAD_CART_COUNT)
 
     agvs = env.agvs
     carts = env.carts
@@ -78,13 +101,10 @@ def main() -> None:
     toggle_rects: dict = {}
     strategy_events: list[tuple[float, str]] = []  # graph markers
 
-    # Fair spawn model: depot fills with carts at t=0 (then 1 per 5 sim-s
-    # into free un-targeted depot tiles); AGVs stream in single-file
-    # through the spawn tile.
-    env.agv_preload_remaining = PRELOAD_AGV_COUNT
-    env.preload_remaining = PRELOAD_CART_COUNT
-    logger.info("Streaming %d AGVs via spawn tile; spawning %d carts at Box Depot",
-                PRELOAD_AGV_COUNT, PRELOAD_CART_COUNT)
+    # Per-slotting picks/hr curves: slotting -> [(sim_t, cumulative picks)].
+    # Survives world restarts so strategies can be compared on one graph.
+    picks_history: dict[str, list[tuple[float, float]]] = {}
+    last_sample_t: float = 0.0
 
     running = True
     while running:
@@ -282,6 +302,35 @@ def main() -> None:
                     if rect.collidepoint(mx, my):
                         clicked_toggle = attr
                         break
+                if clicked_toggle == "slotting_cycle":
+                    old = env.catalog.slotting
+                    idx = SLOTTING_STRATEGIES.index(old) if old in SLOTTING_STRATEGIES else -1
+                    new = SLOTTING_STRATEGIES[(idx + 1) % len(SLOTTING_STRATEGIES)]
+                    if env.sim_elapsed > 0:
+                        # snapshot the finished run: results record + final
+                        # curve point, exactly like the quit path
+                        dispatcher.export_results(env.sim_elapsed, agvs, carts)
+                        picks_history.setdefault(old, []).append(
+                            (env.sim_elapsed, float(env.pickers.picks_done))
+                        )
+                    # re-running a strategy replaces its old curve
+                    picks_history[new] = []
+                    spawn_enabled = env.spawn_enabled
+                    env, dispatcher = _build_world(
+                        new, dispatcher.strategies, env.pickers.strategy,
+                        fleet_target,
+                    )
+                    env.spawn_enabled = spawn_enabled
+                    tiles, graph = env.tiles, env.graph
+                    agvs, carts = env.agvs, env.carts
+                    selected_agv = None       # belonged to the old world
+                    strategy_events = []      # markers use old-run sim times
+                    last_sample_t = 0.0
+                    logger.info(
+                        "[Slotting] %s -> %s — world restarted (seed %d, fleet %dA/%dC)",
+                        old, new, GUI_ORDER_SEED, *fleet_target,
+                    )
+                    continue
                 if clicked_toggle == "picker_dynamic":
                     pm = dispatcher.pickers
                     pm.strategy = (
@@ -308,6 +357,7 @@ def main() -> None:
                         dispatcher.strategies.global_assignment,
                     )
                     t_agvs, t_carts = OPTIMAL_FLEET.get(combo, (10, 25))
+                    fleet_target = (t_agvs, t_carts)  # restarts reproduce it
                     env.retarget_fleet(t_agvs, t_carts)
                     strategy_events.append((
                         env.sim_elapsed,
@@ -387,12 +437,19 @@ def main() -> None:
             dispatcher.update(carts, agvs, graph, tiles, sim_elapsed=env.sim_elapsed)
             env.audit(sim_dt)
 
+            if env.sim_elapsed - last_sample_t >= PICKS_SAMPLE_INTERVAL:
+                picks_history.setdefault(env.catalog.slotting, []).append(
+                    (env.sim_elapsed, float(env.pickers.picks_done))
+                )
+                last_sample_t = env.sim_elapsed
+
         toggle_rects = render(
             screen, tiles, font_sm, font_md, agvs, selected_agv, time_scale,
             carts, dispatcher=dispatcher, sim_elapsed=env.sim_elapsed,
             paused=paused, auto_spawn=env.spawn_enabled,
             strategy_events=strategy_events,
             pickers=env.pickers,
+            picks_history=picks_history,
         )
         pygame.display.flip()
 

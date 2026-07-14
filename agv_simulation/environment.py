@@ -85,7 +85,7 @@ class Environment:
         self.tiles = tiles if tiles is not None else build_map()
         self.graph = build_graph(self.tiles)
         # 2000-SKU aisle catalog (PRD §14); slotting picks the SKU placement
-        # strategy (sequential / aisle_proximal / fibonacci / velocity)
+        # strategy (sequential / aisle_proximal / fibonacci)
         self.catalog = init_catalog(self.tiles, slotting=slotting)
         # Pickers (PRD §14.9); strategy: static station-bound vs dynamic
         # roam-within-side (experiment toggle)

@@ -1,5 +1,28 @@
 # ⚡ SESSION HANDOFF — read this first (2026-07-14, updated evening session)
 
+## ⚡ Slotting session update (2026-07-14, parallel session — slotting owner)
+User-set slotting spec now implemented (all committed this session):
+- **3 strategies only**: sequential / aisle_proximal / fibonacci. **`velocity`
+  DELETED at user request** — EXPERIMENT_DESIGN.md still references it at
+  lines ~60/87/158 and needs updating (its owner: experiments session).
+- **`aisle_proximal` semantics per user spec**: within each (aisle, station)
+  subgroup, most popular SKU nearest that station's (highway) end; aisles
+  with a station at either end split in two, least popular meets in the
+  middle. Same sort key as before (own-station walk) + deterministic index
+  tiebreak; docstrings now state the user-facing meaning. Old 17.0 m figure
+  stale; current demand-weighted walks: sequential 18.1 m, aisle_proximal
+  18.0 m, fibonacci 18.8 m.
+- **GUI**: "Slotting:" panel row is clickable — cycles the 3 arms and does a
+  FULL world restart (`_build_world()` in __main__.py: ID-counter reset +
+  re-seed 42 → identical order stream per arm). Throughput strip is now a
+  per-slotting **picks/hr** comparison graph (rolling 15 min, t=0-aligned,
+  finished runs dimmed; `agv_simulation/metrics.py::rolling_rate`).
+  Light-grey SKU numbers drawn at rack slots (hotter of the 2 levels per
+  face) so placement is visually verifiable per arm.
+- Tests: +12 (tests/test_slotting.py, tests/test_metrics.py); 76 green.
+- 1h seed-42 headless smoke: sequential 13.0 o/hr, aisle_proximal 15.0,
+  fibonacci 12.0 (all picker_busy 52%, picks/hr 413–440).
+
 ## ⚡ Evening update (through commit 2e7231f)
 Model changes (all user-set): orders N(20,9) lines in SKU space (F1
 fairness implemented), BOX_DEPOT_TIME 60 s, **side-constrained zoning**
