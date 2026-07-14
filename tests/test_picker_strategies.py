@@ -118,6 +118,46 @@ def test_added_picker_roams_when_dynamic():
     assert hired.station_id in ("S5", "S7", "S9")
 
 
+def test_one_order_shared_by_many_pickers():
+    """User spec: when a cart arrives, its order can be picked by MANY
+    pickers concurrently — hiring must speed up a single cart, not just
+    parallel carts."""
+    tiles = _world()
+    manager = PickerManager(tiles)
+    manager.add_picker("S3")
+    manager.add_picker("S3")  # crew of 3
+    cart = _picking_cart(tiles, "S3")
+    for _ in range(5):
+        manager.update(0.1, [cart])
+    on_cart = [
+        p for p in manager.pickers["S3"]
+        if p.cart is not None and p.cart.cart_id == cart.cart_id
+    ]
+    assert len(on_cart) >= 2, "order not shared across pickers"
+    _run(manager, [cart])
+    assert manager.carts_served == 1          # closed out exactly once
+    assert manager.carts_left_early == 0
+
+
+def test_shared_order_completes_faster_with_more_pickers():
+    """Crew size must cut a single cart's dwell (diminishing-returns fix)."""
+    def dwell_ticks(extra_pickers):
+        tiles = _world()
+        manager = PickerManager(tiles)
+        for _ in range(extra_pickers):
+            manager.add_picker("S3")
+        cart = _picking_cart(tiles, "S3")
+        for tick in range(40000):
+            manager.update(0.1, [cart])
+            if manager.carts_served == 1:
+                return tick
+        raise AssertionError("cart never served")
+
+    solo = dwell_ticks(0)
+    crew = dwell_ticks(2)
+    assert crew < solo * 0.6, (solo, crew)  # 3 pickers ≥ ~1.7x faster
+
+
 def test_dynamic_relocation_takes_real_time():
     tiles = _world()
     manager = PickerManager(tiles, strategy="dynamic")

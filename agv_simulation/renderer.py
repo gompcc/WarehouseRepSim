@@ -160,6 +160,7 @@ def draw_labels(
     font_md: pygame.font.Font,
     station_fill: dict | None = None,
     eta_forecast: dict | None = None,
+    picker_counts: dict | None = None,
 ) -> None:
     """Draw station names, section labels, and live capacity indicators.
 
@@ -197,6 +198,9 @@ def draw_labels(
             capacity = STATIONS.get(station_id, 0)
             current, rate = 0, 0.0
         text = f"{current}/{capacity}"
+        # Live picker headcount at this station (moves with dynamic roam)
+        if picker_counts is not None and station_id in picker_counts:
+            text += f" ·{picker_counts[station_id]}p"
         if rate <= 0.50:
             color = (30, 140, 30)
         elif rate <= 0.75:
@@ -803,9 +807,15 @@ def render(
         if dispatcher and dispatcher.strategies.eta_reservations
         else None
     )
+    picker_counts = None
+    if pickers is not None:
+        picker_counts = {}
+        for p in pickers.all_pickers():
+            picker_counts[p.station_id] = picker_counts.get(p.station_id, 0) + 1
     draw_labels(
         screen, font_sm, font_md,
         station_fill=station_fill, eta_forecast=eta_forecast,
+        picker_counts=picker_counts,
     )
 
     if carts:

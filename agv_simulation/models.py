@@ -184,7 +184,7 @@ class Job:
 # Station capacities
 STATIONS: dict[str, int] = {
     "S1": 5, "S2": 4, "S3": 4, "S4": 4,
-    "S5": 3, "S6": 4, "S7": 4, "S8": 4, "S9": 4,
+    "S5": 4, "S6": 4, "S7": 4, "S8": 4, "S9": 4,
     "Box_Depot": 8, "Pack_off": 4,
 }
 

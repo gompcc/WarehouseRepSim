@@ -221,8 +221,11 @@ class PickerManager:
             sid: [Picker(sid, cat.station_pos[sid]) for _ in range(PICKERS_PER_STATION)]
             for sid in cat.station_pos
         }
-        # Carts waiting for a picker, FIFO per station: [(cart, skus)]
-        self.queues: dict[str, list[tuple[Cart, list[int]]]] = {
+        # Carts waiting for pickers, FIFO per station. Each entry is
+        # [cart, pool] where pool holds the cart's UNASSIGNED lines —
+        # line-level assignment lets MANY pickers work one cart's order
+        # concurrently (one line per picker round trip).
+        self.queues: dict[str, list[list]] = {
             sid: [] for sid in cat.station_pos
         }
         self._tracked: set[int] = set()  # cart_ids currently queued or served
@@ -260,6 +263,32 @@ class PickerManager:
             return []
         n = max(1, round(self.rng.gauss(PICKS_PER_VISIT_MEAN, PICKS_PER_VISIT_SD)))
         return self.rng.sample(zone, min(n, len(zone)))
+
+    def _take_line(self, station_id: str) -> tuple[Cart, int] | None:
+        """Pop one unassigned line from the oldest cart still holding any
+        at *station_id*; drop entries whose pool has drained."""
+        queue = self.queues[station_id]
+        for entry in list(queue):
+            cart, pool = entry
+            if pool:
+                sku = pool.pop(0)
+                if not pool:
+                    queue.remove(entry)
+                return (cart, sku)
+            queue.remove(entry)  # drained by other pickers
+        return None
+
+    def _cart_in_service(self, cart_id: int) -> bool:
+        """True while the cart still has unassigned lines queued or any
+        picker is mid-line for it."""
+        for queue in self.queues.values():
+            for cart, pool in queue:
+                if cart.cart_id == cart_id and pool:
+                    return True
+        return any(
+            p.cart is not None and p.cart.cart_id == cart_id
+            for p in self.all_pickers()
+        )
 
     def add_picker(self, station_id: str) -> Picker:
         """Hire one extra picker at *station_id* (GUI station click).
@@ -309,34 +338,39 @@ class PickerManager:
             if not picks:
                 continue
             self._tracked.add(cart.cart_id)
-            self.queues[sid].append((cart, picks))
+            self.queues[sid].append([cart, picks])
         self._served_orderless &= set(picking_by_id)  # forget once they leave
 
-        # 2. Departures (cart left PICKING while queued or being served)
+        # 2. Departures (cart left PICKING while queued or being served).
+        # Count each departed cart ONCE, however many pickers/lines it had.
+        departed: set[int] = set()
         for sid, queue in self.queues.items():
-            for cart, _skus in list(queue):
-                if cart.cart_id not in picking_by_id:
-                    queue.remove((cart, _skus))
-                    self._tracked.discard(cart.cart_id)
-                    self.carts_left_early += 1
-        for sid, crew in self.pickers.items():
-            for picker in crew:
-                if picker.cart is not None and picker.cart.cart_id not in picking_by_id:
-                    self._tracked.discard(picker.cart.cart_id)
-                    self.carts_left_early += 1
-                    picker.abort()
+            for entry in list(queue):
+                if entry[0].cart_id not in picking_by_id:
+                    queue.remove(entry)
+                    departed.add(entry[0].cart_id)
+        for picker in self.all_pickers():
+            if picker.cart is not None and picker.cart.cart_id not in picking_by_id:
+                departed.add(picker.cart.cart_id)
+                picker.abort()
+        for cart_id in departed:
+            if cart_id in self._tracked:
+                self._tracked.discard(cart_id)
+                self.carts_left_early += 1
 
-        # 3. Assign idle pickers: own-station queues first for EVERY picker
-        # (free), only then may dynamic pickers relocate — so nobody walks
-        # to a queue its own station's picker was about to take.
+        # 3. Assign idle pickers ONE LINE at a time — several pickers can
+        # work the same cart's order concurrently (user spec: one order,
+        # many pickers). Own-station queues first for EVERY picker; only
+        # then may dynamic pickers relocate to their side's worst backlog.
         idle = [
             p for p in self.all_pickers()
             if p.state == Picker.IDLE and p.cart is None
         ]
         for picker in list(idle):
-            if self.queues[picker.station_id]:
-                cart, skus = self.queues[picker.station_id].pop(0)
-                picker.start_cart(cart, skus)
+            line = self._take_line(picker.station_id)
+            if line is not None:
+                cart, sku = line
+                picker.start_cart(cart, [sku])
                 idle.remove(picker)
         if self.strategy == "dynamic":
             for picker in idle:
@@ -344,21 +378,23 @@ class PickerManager:
                 side = self.station_side.get(sid)
                 candidates = [
                     s for s, q in self.queues.items()
-                    if q and self.station_side.get(s) == side
+                    if self.station_side.get(s) == side
+                    and any(entry[1] for entry in q)
                 ]
                 if not candidates:
                     continue
-                # Worst backlog first; nearer station breaks ties
+                # Worst backlog (unassigned lines) first; nearer breaks ties
                 target = max(
                     candidates,
                     key=lambda s: (
-                        len(self.queues[s]), -self._station_dist_m(sid, s),
+                        sum(len(e[1]) for e in self.queues[s]),
+                        -self._station_dist_m(sid, s),
                     ),
                 )
-                cart, skus = self.queues[target].pop(0)
+                cart, sku = self._take_line(target)
                 walk_secs = self._station_dist_m(sid, target) / PICKER_WALK_SPEED
                 picker.start_cart(
-                    cart, skus,
+                    cart, [sku],
                     station_id=target,
                     station_pos=self.station_positions[target],
                     relocate_secs=walk_secs,
@@ -388,8 +424,17 @@ class PickerManager:
                     had_cart.order, "mark_picked"
                 ):
                     had_cart.order.mark_picked(done_sku)
-            # Cart finished (picker went idle with no pending picks)
-            if had_cart is not None and picker.cart is None and picker.state == Picker.IDLE:
+            # Cart finished: this picker went idle AND no unassigned lines
+            # remain AND no other picker is still mid-line for the cart
+            # (several pickers may share one order — only the last one
+            # to finish closes the cart out)
+            if (
+                had_cart is not None
+                and picker.cart is None
+                and picker.state == Picker.IDLE
+                and not self._cart_in_service(had_cart.cart_id)
+                and had_cart.cart_id in self._tracked
+            ):
                 self._tracked.discard(had_cart.cart_id)
                 self.carts_served += 1
                 self.station_stats[picker.station_id]["carts_served"] += 1

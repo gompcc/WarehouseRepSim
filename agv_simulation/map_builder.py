@@ -96,9 +96,9 @@ def build_map() -> dict[tuple[int, int], Tile]:
         put(24, y, TileType.PICK_STATION, "S4")
 
     # 11. RIGHT-SIDE STATIONS
-    # S5
-    fill_rect(54, 34, 58, 36, TileType.RACKING, "S5")
-    for y in range(34, 37):
+    # S5 — 4 slots (4th added 2026-07-14, user request; was 3)
+    fill_rect(54, 34, 58, 37, TileType.RACKING, "S5")
+    for y in range(34, 38):
         put(53, y, TileType.PICK_STATION, "S5")
     # S6
     fill_rect(46, 28, 50, 31, TileType.RACKING, "S6")
