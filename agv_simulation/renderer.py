@@ -435,9 +435,9 @@ def render(
     screen.fill(BG_COLOR)
 
     layer_order = [
-        TileType.RACKING, TileType.AGV_SPAWN, TileType.BOX_DEPOT,
-        TileType.PACKOFF, TileType.CART_SPAWN, TileType.PARKING,
-        TileType.PICK_STATION, TileType.HIGHWAY,
+        TileType.AISLE_RACK, TileType.RACKING, TileType.AGV_SPAWN,
+        TileType.BOX_DEPOT, TileType.PACKOFF, TileType.CART_SPAWN,
+        TileType.PARKING, TileType.PICK_STATION, TileType.HIGHWAY,
     ]
     by_type: dict[TileType, list] = {tt: [] for tt in layer_order}
     for tile in tiles.values():

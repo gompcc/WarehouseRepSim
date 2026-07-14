@@ -11,6 +11,7 @@ from .constants import (
 )
 from .models import Tile
 from .pathfinding import astar
+from .aisles import aisle_rack_positions
 
 logger = logging.getLogger(__name__)
 
@@ -158,6 +159,11 @@ def build_map() -> dict[tuple[int, int], Tile]:
     # Along East Highway (one row below, row 39)
     for x in [26, 32, 38, 44, 50]:
         put(x, 39, TileType.PARKING)
+
+    # 14. PRODUCT AISLES — three banks of bi-level pick racking (PRD §14).
+    # Not walkable by AGVs; pickers-only territory.
+    for (x, y) in aisle_rack_positions():
+        put(x, y, TileType.AISLE_RACK)
 
     return tiles
 

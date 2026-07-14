@@ -26,6 +26,7 @@ from .enums import AGVState, CartState, TileType
 from .models import Cart
 from .agv import AGV
 from .map_builder import build_map, build_graph
+from .aisles import init_catalog
 from .constants import (
     CART_SPAWN_TILES, PRELOAD_SPAWN_INTERVAL, AUTO_SPAWN_INTERVAL,
     STUCK_WARN_SECONDS, DEFAULT_AGV_SPOTS,
@@ -69,6 +70,7 @@ class Environment:
     ) -> None:
         self.tiles = tiles if tiles is not None else build_map()
         self.graph = build_graph(self.tiles)
+        self.catalog = init_catalog(self.tiles)  # 2000-SKU aisle catalog (PRD §14)
         self.agvs: list[AGV] = []
         self.carts: list[Cart] = []
         self.sim_elapsed: float = 0.0

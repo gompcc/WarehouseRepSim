@@ -11,6 +11,7 @@ class TileType(Enum):
     AGV_SPAWN    = "agv_spawn"      # Gray   - AGV starting area
     CART_SPAWN   = "cart_spawn"     # Light purple - cart starting area
     RACKING      = "racking"        # Light yellow - shelving / pallet storage
+    AISLE_RACK   = "aisle_rack"     # Dark bars - bi-level pick racking (SKU slots)
 
 
 class AGVState(Enum):
