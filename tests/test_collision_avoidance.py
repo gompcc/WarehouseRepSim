@@ -590,3 +590,83 @@ def test_giveup_drop_releases_cart_in_place():
     assert cart.pos == (10, 24)
     assert cart.carried_by is None
     assert agv.carrying_cart is None
+
+
+# -- Graph safety invariants (map-agnostic: must hold for ANY layout) --
+
+def test_graph_has_no_sink_nodes():
+    """Every node needs an outgoing edge — a sink permanently traps an AGV
+    (row 8's westbound lane used to dead-end at (1,8))."""
+    tiles = build_map()
+    graph = build_graph(tiles)
+    sinks = [pos for pos, nbrs in graph.items() if not nbrs]
+    assert sinks == []
+
+
+def test_graph_fully_mutually_reachable():
+    """Every node must be reachable from the spawn exit AND able to return.
+    One-way sections that strand AGVs deadlock the sim eventually."""
+    from collections import deque
+
+    tiles = build_map()
+    graph = build_graph(tiles)
+    start = (1, 7)
+
+    def bfs(adjacency, src):
+        seen = {src}
+        queue = deque([src])
+        while queue:
+            cur = queue.popleft()
+            for nxt in adjacency.get(cur, set()):
+                if nxt not in seen:
+                    seen.add(nxt)
+                    queue.append(nxt)
+        return seen
+
+    reverse: dict = {pos: set() for pos in graph}
+    for pos, nbrs in graph.items():
+        for nxt in nbrs:
+            reverse[nxt].add(pos)
+
+    assert set(graph) - bfs(graph, start) == set()
+    assert set(graph) - bfs(reverse, start) == set()
+
+
+def test_no_headon_two_cycle_at_choke_points():
+    """A bidirectional highway pair where one side is the ONLY route between
+    two regions lets two AGVs meet head-on and freeze the warehouse (the old
+    (8,7)<->(9,7) junction). Bidirectional pairs are only safe when each
+    side has an alternative route around the pair."""
+    from collections import deque
+
+    tiles = build_map()
+    graph = build_graph(tiles)
+
+    def reachable_without(src, dst, banned_edge):
+        seen = {src}
+        queue = deque([src])
+        while queue:
+            cur = queue.popleft()
+            if cur == dst:
+                return True
+            for nxt in graph.get(cur, set()):
+                if (cur, nxt) == banned_edge or nxt in seen:
+                    continue
+                seen.add(nxt)
+                queue.append(nxt)
+        return False
+
+    for a, nbrs in graph.items():
+        for b in nbrs:
+            if a < b and a in graph.get(b, set()):
+                if tiles[a].tile_type != TileType.HIGHWAY:
+                    continue
+                if tiles[b].tile_type != TileType.HIGHWAY:
+                    continue
+                # Each direction must survive losing its direct edge
+                assert reachable_without(a, b, (a, b)), (
+                    f"head-on choke: {a}->{b} has no alternative route"
+                )
+                assert reachable_without(b, a, (b, a)), (
+                    f"head-on choke: {b}->{a} has no alternative route"
+                )
