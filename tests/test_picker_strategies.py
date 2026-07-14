@@ -88,6 +88,36 @@ def test_dynamic_never_crosses_the_highway():
             assert picker.station_id == sid
 
 
+def test_added_picker_serves_in_parallel():
+    """GUI station click hires an extra picker; both work the same queue."""
+    tiles = _world()
+    manager = PickerManager(tiles)
+    manager.add_picker("S3")
+    assert len(manager.pickers["S3"]) == 2
+    carts = [_picking_cart(tiles, "S3", 0), _picking_cart(tiles, "S3", 1)]
+    for _ in range(5):
+        manager.update(0.1, carts)
+    busy = [p for p in manager.pickers["S3"] if p.cart is not None]
+    assert len(busy) == 2          # served simultaneously, no relocation
+    assert manager.relocations == 0
+    _run(manager, carts)
+    assert manager.carts_served == 2
+
+
+def test_added_picker_roams_when_dynamic():
+    """A hired picker participates in dynamic roaming on its side."""
+    tiles = _world()
+    manager = PickerManager(tiles, strategy="dynamic")
+    manager.add_picker("S9")  # east side
+    # Three carts at S5: S5's picker + two east helpers can cover them
+    carts = [_picking_cart(tiles, "S5", i) for i in range(3)]
+    _run(manager, carts)
+    assert manager.carts_served == 3
+    # The hired picker (2nd in S9's crew) must have relocated within east
+    hired = manager.pickers["S9"][1]
+    assert hired.station_id in ("S5", "S7", "S9")
+
+
 def test_dynamic_relocation_takes_real_time():
     tiles = _world()
     manager = PickerManager(tiles, strategy="dynamic")

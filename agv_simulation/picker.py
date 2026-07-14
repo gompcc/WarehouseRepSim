@@ -261,6 +261,15 @@ class PickerManager:
         n = max(1, round(self.rng.gauss(PICKS_PER_VISIT_MEAN, PICKS_PER_VISIT_SD)))
         return self.rng.sample(zone, min(n, len(zone)))
 
+    def add_picker(self, station_id: str) -> Picker:
+        """Hire one extra picker at *station_id* (GUI station click).
+
+        Under the dynamic strategy the newcomer roams its side like any
+        other picker — assignment iterates live crews, so no extra wiring."""
+        picker = Picker(station_id, self.station_positions[station_id])
+        self.pickers[station_id].append(picker)
+        return picker
+
     def _station_dist_m(self, a: str, b: str) -> float:
         """Walking metres between two station homes (same side only —
         callers never pair stations across the highway)."""

@@ -265,7 +265,16 @@ def draw_cart(
     color = cart.get_color()
     rect = pygame.Rect(cx - w // 2, cy - h // 2, w, h)
     pygame.draw.rect(surface, color, rect, border_radius=2)
-    pygame.draw.rect(surface, (0, 0, 0), rect, 1, border_radius=2)
+    # A waiting cart shows WHICH station it waits for: border in that
+    # station's zone color (a full S1/S3 explains carts idling far away)
+    outline = (0, 0, 0)
+    if cart.state == CartState.WAITING_FOR_STATION and cart.order is not None:
+        ns = cart.order.next_station()
+        if ns is not None:
+            outline = ZONE_COLORS.get(f"S{ns}", outline)
+        else:
+            outline = TILE_COLORS[TileType.PACKOFF]  # all picked → Pack-off
+    pygame.draw.rect(surface, outline, rect, 2, border_radius=2)
 
     id_text = font.render(f"C{cart.cart_id}", True, (0, 0, 0))
     id_rect = id_text.get_rect(center=(cx, cy))

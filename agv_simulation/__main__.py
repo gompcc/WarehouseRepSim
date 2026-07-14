@@ -320,6 +320,27 @@ def main() -> None:
                     continue
                 if mx >= MAP_WIDTH:
                     continue
+                # Click an S station (its tiles or racking block) → hire a
+                # picker there. Under the dynamic strategy the newcomer
+                # roams that station's side like any other picker.
+                _tile = tiles.get((mx // TILE_SIZE, my // TILE_SIZE))
+                if (
+                    _tile is not None
+                    and _tile.station_id
+                    and _tile.station_id.startswith("S")
+                    and _tile.tile_type in (TileType.PICK_STATION, TileType.RACKING)
+                ):
+                    sid = _tile.station_id
+                    new_picker = env.pickers.add_picker(sid)
+                    crew_n = len(env.pickers.pickers[sid])
+                    strategy_events.append(
+                        (env.sim_elapsed, f"+picker {sid} ({crew_n})")
+                    )
+                    logger.info(
+                        "[Pickers] Hired picker %d at %s — crew %d (%s strategy)",
+                        new_picker.picker_id, sid, crew_n, env.pickers.strategy,
+                    )
+                    continue
                 if selected_agv and selected_agv.current_job:
                     logger.info("AGV %d busy with autonomous job", selected_agv.agv_id)
                 elif selected_agv and selected_agv.state == AGVState.IDLE:

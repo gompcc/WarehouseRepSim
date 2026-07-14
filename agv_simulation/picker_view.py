@@ -11,7 +11,7 @@ from typing import TYPE_CHECKING
 import pygame
 
 from .constants import (
-    TILE_SIZE, PICKER_WALK_SPEED, PICK_GRAB_TIME, PICKERS_PER_STATION,
+    TILE_SIZE, PICKER_WALK_SPEED, PICK_GRAB_TIME,
     LABEL_BG, OUTLINE_COLOR,
 )
 from .aisles import get_catalog
@@ -55,7 +55,8 @@ def draw_picker_info(
     lines = [
         f"PICKERS ({manager.strategy}"
         f"{', gating' if manager.gating else ', shadow'})",
-        f"{PICKERS_PER_STATION}/station · {PICKER_WALK_SPEED} m/s · grab {PICK_GRAB_TIME:.0f}s",
+        f"{len(manager.all_pickers())} pickers (click a station to add)"
+        f" · {PICKER_WALK_SPEED} m/s · grab {PICK_GRAB_TIME:.0f}s",
         f"lines/order: μ{ORDER_LINES_MEAN:.0f} σ{ORDER_LINES_SD:.0f}",
         f"walk/pick: μ{calib['mean_s']:.0f}s σ{calib['sd_s']:.0f}"
         f" (near {calib['near_p16_s']:.0f} / far {calib['far_p84_s']:.0f})",
