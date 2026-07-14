@@ -1673,10 +1673,15 @@ Please provide:
 
 ## 14. PICKER & PRODUCT AISLE MODEL
 
-> **Status: IN PROGRESS (2026-07-14).** This section is the design spec for the
-> picker/aisle subsystem. Implementation plan and progress live in
-> `tasks/todo.md`. Layout follows the user's hand-drawn sketch (three banks of
-> horizontal racking aisles flanking and between the station columns).
+> **Status: PAUSED AFTER STAGE 2 (2026-07-14).** Stages 1–2 are implemented
+> and committed: the grid expansion (14.2) and the aisle geometry + 2000-SKU
+> catalog (14.3–14.5, `agv_simulation/aisles.py`, rendered as dark bars).
+> Stage 3 (picker agents, SKU-based orders, dispatcher integration — 14.6)
+> is NOT implemented yet; it was deliberately paused because concurrent
+> dispatch-strategy work is refactoring `dispatcher.py` (see `tasks/todo.md`).
+> `PICK_TIME_PER_ITEM` therefore still governs station dwell time for now.
+> Layout follows the user's hand-drawn sketch (three banks of horizontal
+> racking aisles flanking and between the station columns).
 
 ### 14.1 Motivation
 
