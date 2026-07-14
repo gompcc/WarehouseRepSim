@@ -147,3 +147,18 @@
 - **Result**: 55.5 orders/hr (was 62.0) | regression across all configs
 - **Analysis**: Carts waiting at stations block the station tile, preventing other carts from being processed there. Buffering to a nearby parking spot frees the station tile for productive use. The buffer move is NOT wasted — it's essential for station throughput.
 - **Key insight**: Always buffer carts away from station tiles when the next station is full. Station tile occupancy is a critical resource — never let a waiting cart block it.
+
+### Iteration 18: Environment/Dispatcher Separation + Stuck-Cart Bug Hunt — SUCCESS
+
+- **Hypothesis**: Carts were getting permanently stuck (log showed C19 buffered 50x, avg cycle computed from 13 of 347 orders). Instrumenting the environment and fixing lifecycle holes should recover lost fleet capacity.
+- **Change**: New `environment.py` (Environment owns world state/stepping/spawning; structured JSONL event log; stuck-cart watchdog; physics guard detecting cart teleports). Headless + GUI now drive the same Environment. Dispatcher fixes: orphan recovery (WAITING cart with `order=None` matched NO dispatch branch → deadlocked forever; 4/25 carts dead in an 8h run), `Order.packed` flag (aborted returns were re-sent to Pack-off), cycle-time stamped every cycle, give-up releases cart at AGV's position (was teleporting), buffer spots exclude AGV-occupied tiles, retargets spaced out (were burning 3 attempts in 0.3s).
+- **Result**: 10/25: 43.4 → ~53 orders/hr. 14/25: 77.7–81.0 (was 43–62). Stuck events 485 → 73 at 14/25; teleports 0.
+- **Key insight**: The biggest losses weren't congestion — they were *state-machine holes* that permanently killed carts. Every cart lifecycle state × (order status) combination must map to a recovery job. The environment-level watchdog (no progress for 300s → event) found in minutes what weeks of throughput tuning missed.
+
+### Iteration 19: Map-Graph Deadlock Traps — SUCCESS (environment fix)
+
+- **Hypothesis**: A 10/25 run froze entirely at t≈1060s (0.1 orders/hr). Suspected AGV-level deadlock, not dispatcher policy.
+- **Change**: Seed-0 repro + full AGV state dump showed a head-on 2-cycle: junction (9,7) had a westbound edge into (8,7) while row 7 cols 1–8 flow east into (9,7) — two AGVs met and froze the single connector between the NW corridor and the loop; everything queued behind. Also found row 8 cols 1–8 dead-ends at (1,8) with zero outgoing edges (permanent AGV trap). Removed the westbound junction edge; added merge-north edges from the row-8 return lane.
+- **Result**: 12/12 seeds complete cleanly (382–440 orders/8h at 10/25). Scaling now works: 16 AGVs/25 carts → **89.5 orders/hr** (new record, was 62.0). 16/30 → 85.5 (more carts hurt: congestion).
+- **Key insight**: Separate environment defects from dispatcher quality. Both freezes looked like "dispatcher gridlock" but were *map topology bugs*. New map-agnostic invariant tests (no sink nodes, full mutual reachability, no head-on 2-cycle without an alternative route) now guard any future layout — important for the aisle redesign.
+- **Note for aisle-map session**: junction coordinates in `build_graph` and coordinate-hardcoded tests must shift with the +14-col migration; the three graph-invariant tests in `test_collision_avoidance.py` are coordinate-free and must stay green.
