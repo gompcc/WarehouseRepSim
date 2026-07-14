@@ -1,3 +1,59 @@
+# ⚡ SESSION HANDOFF — read this first (2026-07-14, end of picker/slotting session)
+
+Everything below this block is historical context from two parallel
+workstreams (dispatch strategies + picker/aisle model), both now MERGED and
+COMMITTED through `3f27a16`. Tree was clean at handoff except `.claude/`.
+
+## State of the world
+- Pickers fully integrated: carts leave a station only when their SKU lines
+  are picked (90s flat rule DELETED). Seeded 1h baseline: 23 orders/hr,
+  pickers 81% busy (binding constraint), 0 left early. 60 tests green.
+- 2000 SKUs with half-normal popularity (SKU 1 ≈ 90× SKU 2000); orders =
+  1–9 stations × max(1, round(N(4,2))) popularity-weighted zone SKUs.
+- 4 slotting strategies toggleable via `run_headless(slotting=...)`:
+  demand-weighted one-way walk = sequential 17.1 m | aisle_proximal 17.0 m |
+  fibonacci 18.0 m (WORSE — pickers launch from stations, not the track) |
+  velocity 13.1 m (−23%, the lower bound). Calibration constants FROZEN
+  (aisles.WALK_TIME_FIXED/SCALE) — placement experiments measure walk deltas.
+- Experiment methodology: `experiments/EXPERIMENT_DESIGN.md` (paired seeds,
+  warm-up exclusion, fairness rules, ranked new dispatcher strategies —
+  picker-aware dispatch first). NOTE its fairness catch: orders sample SKUs
+  within station zones, so slotting changes the demand stream — generate
+  orders in SKU space before running Matrix A.
+
+## Remaining task queue (mirrors the session task list #7–#15)
+- [ ] **Logging/storage revamp** — implement `tasks/logging-revamp-plan.md`
+      (EventLog memory filter, 60 s snapshots in headless returns, INFO→DEBUG,
+      per-run JSON; + order_completion_times & per-station picker stats in
+      run_headless returns for the experiments)
+- [ ] **Placement visualization** — map colored by SKU popularity per
+      slotting strategy (show the fibonacci rings around the track) + bar
+      graph comparing avg picker walk time: sequential vs aisle-proximal vs
+      fibonacci (vs velocity). Use the dataviz skill for chart styling.
+      Also: GUI should display the active slotting strategy name.
+- [ ] **Station/aisle zone color-coding (user request)** — each S station
+      gets a color; each racking run's border colored by the station owning
+      its slots, per face (N/S side of a run can differ; a face split
+      between stations gets segmented borders). Legend on map.
+- [ ] **Picker strategies as experiment toggles (user request)** — (a)
+      STATIC: picker bound to a station + its aisles (current); (b) DYNAMIC:
+      pickers roam, serving the carts that most improve throughput
+      (inter-station walking counted). Headless + GUI toggles; add to the
+      experiment matrix.
+- [ ] **Integration sweep** — seeded runs per slotting × picker strategy,
+      GUI snapshot, no stuck pathologies, tests green.
+- [ ] **Cleanup (subagents)** — dead code, efficiency sweep (dispatcher
+      scans, picker updates), eliminate happy-path-only testing.
+- [ ] **Run experiments + 2-page findings doc** — per
+      EXPERIMENT_DESIGN.md: §product layout, §dispatcher strategies,
+      4–6 decision-grade figures (walk-time bar chart required).
+
+Multi-session warning: another Claude session may share this working tree
+and branch — check `git status` for foreign changes before editing/committing;
+stage only files whose diff is yours (see memory: concurrent-sessions-same-worktree).
+
+---
+
 # Toggleable Dispatch Strategy Modules (2026-07-14)
 
 Goal: prove throughput impact of three dispatch strategies, each an isolated
