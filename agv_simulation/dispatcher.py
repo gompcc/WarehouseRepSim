@@ -7,14 +7,13 @@ from typing import TYPE_CHECKING
 
 from .enums import AGVState, CartState, JobType, TileType
 from .constants import (
-    BOX_DEPOT_TIME, PICK_TIME_PER_ITEM, PACKOFF_TIME,
+    BOX_DEPOT_TIME, PACKOFF_TIME,
     BLOCK_TIMEOUT, REROUTE_COOLDOWN, JOB_CANCEL_TIMEOUT,
     MAX_CONCURRENT_DISPATCHES,
 )
 from .models import Job, Order, STATIONS
 from .strategies import (
-    StrategyConfig, DistanceMap, ETAReservations,
-    GlobalAssignment, OrderSequencing,
+    StrategyConfig, DistanceMap, ETAReservations, GlobalAssignment,
 )
 
 if TYPE_CHECKING:
@@ -31,6 +30,7 @@ class Dispatcher:
         self,
         tiles: dict[tuple[int, int], Tile],
         strategies: StrategyConfig | None = None,
+        pickers=None,  # PickerManager | None (PRD §14.6 release rule)
     ) -> None:
         self._station_tiles: dict[tuple[str | None, TileType], list[tuple[int, int]]] = {}
         for (x, y), tile in tiles.items():
@@ -46,24 +46,52 @@ class Dispatcher:
         self.cycle_times: list[float] = []
         self._sim_elapsed: float = 0.0
 
+        # Picker release rule (PRD §14.6): a cart may leave a pick station
+        # only once its SKU lines there are picked. Drivers pass the
+        # Environment's ticked PickerManager; bare construction (unit tests)
+        # gets its own so the invariant "dispatching is always picker-gated"
+        # holds everywhere — there is no flat-timer mode.
+        from .picker import PickerManager
+        self.pickers = pickers if pickers is not None else PickerManager(tiles)
+        self.pickers.gating = True
+
         # Strategy modules (toggleable at runtime; None until first update
-        # because the DistanceMap needs the routing graph)
+        # because the DistanceMap needs the routing graph). The DistanceMap
+        # itself is core dispatcher infrastructure, not a toggle: all travel
+        # is priced with true directed distances.
         self.strategies = strategies or StrategyConfig()
         self.eta_forecast: dict[str, tuple[float, int]] = {}
         self._dist_map: DistanceMap | None = None
         self._eta: ETAReservations | None = None
-        self._sequencing: OrderSequencing | None = None
         self._global_assign: GlobalAssignment | None = None
 
     def _ensure_strategies(
         self, graph: dict[tuple[int, int], set[tuple[int, int]]],
     ) -> None:
-        """Build strategy modules on first tick (they need the graph)."""
+        """Build the distance map + strategy modules on first tick."""
         if self._dist_map is None:
             self._dist_map = DistanceMap(graph, self._station_tiles)
             self._eta = ETAReservations(self._dist_map)
-            self._sequencing = OrderSequencing(self._dist_map)
             self._global_assign = GlobalAssignment()
+
+    # Next-station choice considers the TRAVEL_WINDOW nearest remaining
+    # stations by true directed distance. Manhattan underprices left<->right
+    # bank crossings ~2x (banks connect only via the top/bottom highways);
+    # the window keeps carts finishing the near bank before paying the
+    # crossing toll, while still allowing a skip past a crowded neighbor.
+    TRAVEL_WINDOW = 3
+
+    def _travel_window(
+        self, cart_pos: tuple[int, int], remaining: list[int],
+    ) -> list[int]:
+        """Remaining stations ordered by directed travel distance, windowed."""
+        if self._dist_map is None:
+            return list(remaining)
+        ordered = sorted(
+            remaining,
+            key=lambda s: self._dist_map.hops_to_station(cart_pos, f"S{s}"),
+        )
+        return ordered[: self.TRAVEL_WINDOW]
 
     def _choose_next_station(
         self,
@@ -73,10 +101,10 @@ class Dispatcher:
     ) -> int | None:
         """Pick the next station for *cart* (single seam for all strategies).
 
-        With all toggles off this reproduces baseline behavior exactly:
-        greedy fill+distance scoring over all remaining stations, falling
-        back to the lowest-numbered remaining station when everything is
-        full. Returns ``None`` only when no stations remain.
+        Candidates are always the travel-window nearest remaining stations;
+        the scorer is greedy fill+distance by default, or ETA-predicted fill
+        when the eta_reservations toggle is on. Returns ``None`` only when
+        no stations remain.
         """
         if cart.order is None:
             return None
@@ -86,21 +114,15 @@ class Dispatcher:
         ]
         if not remaining:
             return None
-        cfg = self.strategies
-        candidates = remaining
-        if cfg.order_sequencing and self._sequencing:
-            candidates = self._sequencing.order_candidates(cart, remaining)
-        if cfg.eta_reservations and self._eta:
+        candidates = self._travel_window(cart.pos, remaining)
+        if self.strategies.eta_reservations and self._eta:
             ns = self._eta.choose_station(self, cart, candidates, carts, agvs)
         else:
             ns = self._pick_best_station(candidates, cart.pos, carts)
         if ns is None:
-            # All candidates full — deterministic fallback (job creation may
+            # All candidates full — nearest-ahead fallback (job creation may
             # still buffer the cart if no tile is free).
-            if cfg.order_sequencing and self._sequencing:
-                ns = candidates[0]
-            else:
-                ns = cart.order.next_station()
+            ns = candidates[0]
         return ns
 
     def job_targets(self) -> set[tuple[int, int]]:
@@ -152,7 +174,9 @@ class Dispatcher:
         """Pick the best station using weighted fill-rate + distance scoring.
 
         Balances station load against travel distance so that nearby stations
-        with acceptable capacity beat distant empty ones (avoids cross-warehouse trips).
+        with acceptable capacity beat distant empty ones. Distance is the
+        true directed driving distance (falls back to Manhattan only before
+        the distance map exists on the first tick).
         """
         fill = self.get_station_fill(carts)
         candidates: list[tuple[float, int]] = []
@@ -161,12 +185,17 @@ class Dispatcher:
             current, capacity, rate = fill.get(sid, (0, 0, 1.0))
             if current >= capacity:
                 continue
-            station_tiles = self._station_tiles.get((sid, TileType.PICK_STATION), [])
-            dist = (
-                abs(cart_pos[0] - station_tiles[0][0]) + abs(cart_pos[1] - station_tiles[0][1])
-                if station_tiles
-                else float("inf")
-            )
+            if self._dist_map is not None:
+                dist = self._dist_map.hops_to_station(cart_pos, sid)
+            else:
+                station_tiles = self._station_tiles.get((sid, TileType.PICK_STATION), [])
+                dist = (
+                    abs(cart_pos[0] - station_tiles[0][0]) + abs(cart_pos[1] - station_tiles[0][1])
+                    if station_tiles
+                    else float("inf")
+                )
+            if dist == float("inf"):
+                continue
             # Weighted score: fill rate scaled to be comparable with distance.
             # A 50% full station 5 tiles away beats a 0% station 40 tiles away.
             score = rate * 30.0 + dist
@@ -225,6 +254,11 @@ class Dispatcher:
                 best = pos
         return best
 
+    def _picking_done(self, cart: Cart) -> bool:
+        """Release rule for carts in PICKING (PRD §14.6): the cart stays at
+        the station until every one of its SKU lines there is picked."""
+        return self.pickers.cart_done(cart)
+
     def _has_job(self, cart: Cart) -> bool:
         """Check if *cart* already has a pending or active job."""
         for job in self.pending_jobs:
@@ -277,7 +311,7 @@ class Dispatcher:
                         job = Job(JobType.MOVE_TO_PICK, cart, target, station_id=sid)
                         self.pending_jobs.append(job)
 
-            elif cart.state == CartState.PICKING and cart.process_timer <= 0:
+            elif cart.state == CartState.PICKING and self._picking_done(cart):
                 if cart.order:
                     ns = self._choose_next_station(cart, carts, agvs)
                     if ns is not None:
@@ -467,14 +501,18 @@ class Dispatcher:
 
         elif job.job_type == JobType.MOVE_TO_PICK:
             station_num = int(job.station_id[1:])
-            items = cart.order.items_at_station(station_num) if cart.order else 1
             cart.state = CartState.PICKING
-            cart.process_timer = PICK_TIME_PER_ITEM * items
-            if cart.order:
-                cart.order.complete_station(station_num)
+            # Picker-gated: the station's picker walks each remaining SKU
+            # line; it calls complete_station() when the last line is picked,
+            # and _picking_done() holds the cart until then.
+            cart.process_timer = 0.0
+            remaining = (
+                len(cart.order.skus_remaining_at(station_num))
+                if cart.order else 0
+            )
             logger.info(
-                "[Dispatcher] C%d at %s — picking %d items (%ss)",
-                cart.cart_id, job.station_id, items, cart.process_timer,
+                "[Dispatcher] C%d at %s — %d lines for the picker",
+                cart.cart_id, job.station_id, remaining,
             )
 
         elif job.job_type == JobType.MOVE_TO_PACKOFF:
@@ -997,7 +1035,8 @@ class Dispatcher:
             "\n---\n",
             f"## Run: {datetime.now().strftime('%Y-%m-%d %H:%M')}\n",
             f"**Config**: {len(agvs)} AGVs, {len(carts)} carts"
-            f" | Packoff {PACKOFF_TIME}s, Pick {PICK_TIME_PER_ITEM}s/item\n",
+            f" | Packoff {PACKOFF_TIME}s, Pick picker-gated"
+            " (walk μ30s + grab 10s)\n",
             f"**Elapsed**: {elapsed_h}h {elapsed_m}m"
             f" | **Orders**: {stats['completed']:.0f}"
             f" | **Orders/hr**: {stats['per_hour']:.1f}"
@@ -1018,6 +1057,12 @@ class Dispatcher:
             cur, cap, rate = fill.get(sid, (0, 0, 0.0))
             lines.append(f"| {sid:<10s} | {cur}/{cap} ({rate:.0%}) |\n")
 
+        lines.append(
+            "\nPickers: {picks_done} picks | walk μ{walk_mean_s:.0f}s"
+            " σ{walk_sd_s:.0f}s | busy {busy_fraction:.0%}"
+            " | {carts_served} carts served,"
+            " {carts_left_early} left early\n".format(**self.pickers.stats())
+        )
         lines.append(
             f"\nAGV util: {active_agvs}/{len(agvs)} active"
             f" | Blocked: {blocked_agvs}"

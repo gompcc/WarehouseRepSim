@@ -66,7 +66,7 @@ def main() -> None:
     set_order_seed(GUI_ORDER_SEED)
     logger.info("Order stream seeded (%d) — comparable across sessions", GUI_ORDER_SEED)
 
-    dispatcher = Dispatcher(tiles)
+    dispatcher = Dispatcher(tiles, pickers=env.pickers)
 
     agvs = env.agvs
     carts = env.carts

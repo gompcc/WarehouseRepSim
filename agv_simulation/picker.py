@@ -1,19 +1,16 @@
-"""Shadow-mode pickers: per-station humans who walk the product aisles.
+"""Pickers: per-station humans who walk the product aisles (PRD §14.6/14.9).
 
-PRD §14.9. This subsystem is deliberately **independent of the dispatcher**:
-pickers *react* to carts sitting at pick stations in ``PICKING`` state, walk
-their (sampled) picks in the aisles, and record statistics — but they do not
-yet gate cart departure. The cart still leaves on the dispatcher's timer.
-Pulling the two together later is a single seam: make the dispatcher's
-PICKING branch wait for ``PickerManager.cart_done(cart)`` instead of
-``process_timer`` (and derive real pick lists from SKU-based orders).
+Pickers react to carts sitting at pick stations in ``PICKING`` state, walk
+each of the cart's SKU lines (one line per round trip), and — when wired to
+the Dispatcher (``gating=True``, the normal mode; there is no flat-timer
+fallback) — gate the cart's departure: ``cart_done(cart)`` is the release
+rule, and the picker calls ``order.complete_station()`` on the last line.
 
-Workload model (until orders carry real SKUs): when a cart arrives at a
-station, the picker crew samples ``max(1, round(N(4, 2)))`` distinct SKUs
-uniformly from that station's zoned SKUs — matching the target of ~4 picks
-per cart-visit (σ 2). Walking time per pick follows the calibrated aisle
-geometry (μ 30 s, σ 10 s round trip; see ``aisles.WALK_TIME_*``), plus
-``PICK_GRAB_TIME`` at the slot. A picker carries one SKU line per trip.
+Pick lists come from the cart's SKU order (``order.skus_remaining_at``,
+resume-safe after buffering). Carts without an order (manual/edge cases) get
+a sampled list of ``max(1, round(N(4, 2)))`` SKUs from the station's zone.
+Walking time follows the calibrated aisle geometry (μ 30 s, σ 10 s round
+trip; see ``aisles.WALK_TIME_*``) plus ``PICK_GRAB_TIME`` at the slot.
 
 Pickers use their own RNG stream so they never perturb the seeded order
 stream used by the dispatch-strategy experiments.
@@ -21,20 +18,21 @@ stream used by the dispatch-strategy experiments.
 
 from __future__ import annotations
 
+import logging
 import random
 from typing import TYPE_CHECKING
 
 from .enums import CartState, TileType
-from .constants import PICK_GRAB_TIME, PICKERS_PER_STATION
+from .constants import (
+    PICK_GRAB_TIME, PICKERS_PER_STATION,
+    PICKS_PER_VISIT_MEAN, PICKS_PER_VISIT_SD,
+)
 from .aisles import get_catalog, walk_time_seconds
 
 if TYPE_CHECKING:
     from .models import Cart, Tile
 
-# Target workload per cart-visit at a station (sampled in shadow mode,
-# later derived from real SKU orders): mean 4 picks, sd 2, min 1.
-PICKS_PER_VISIT_MEAN = 4.0
-PICKS_PER_VISIT_SD = 2.0
+logger = logging.getLogger(__name__)
 
 _PICKER_RNG_SEED = 20260714  # own stream — never touches the global RNG
 
@@ -172,6 +170,12 @@ class PickerManager:
             sid: [] for sid in cat.station_pos
         }
         self._tracked: set[int] = set()  # cart_ids currently queued or served
+        # Orderless carts served once must not be re-sampled while they
+        # linger in PICKING (order-driven carts are guarded by remaining=0)
+        self._served_orderless: set[int] = set()
+        # True once a Dispatcher is wired to gate cart release on cart_done()
+        # (set by Dispatcher.__init__); False = shadow mode, GUI label only.
+        self.gating = False
 
         # Stats
         self.picks_done = 0
@@ -185,12 +189,21 @@ class PickerManager:
     # -- workload sampling ----------------------------------------------
 
     def _sample_picks(self, station_id: str) -> list[int]:
+        """Shadow-mode fallback for carts without a SKU order."""
         cat = get_catalog()
         zone = cat.station_skus.get(station_id, [])
         if not zone:
             return []
         n = max(1, round(self.rng.gauss(PICKS_PER_VISIT_MEAN, PICKS_PER_VISIT_SD)))
         return self.rng.sample(zone, min(n, len(zone)))
+
+    def _pick_list(self, cart: Cart, station_id: str) -> list[int]:
+        """The SKU lines this cart needs here: the order's *remaining* lines
+        (resume-safe after buffering), or a sampled list when orderless."""
+        order = cart.order
+        if order is not None and hasattr(order, "skus_remaining_at"):
+            return order.skus_remaining_at(int(station_id[1:]))
+        return self._sample_picks(station_id)
 
     # -- main tick -------------------------------------------------------
 
@@ -202,15 +215,22 @@ class PickerManager:
             if c.state == CartState.PICKING and c.carried_by is None
         }
 
-        # 1. New arrivals → sample their picks, queue them
+        # 1. New arrivals → derive their pick lists, queue them. A cart with
+        # nothing to pick here is NOT tracked: a served cart that lingers in
+        # PICKING (e.g. its next station is full) must stay released —
+        # re-queueing it with an empty list would deadlock it forever.
         for cart in picking_by_id.values():
-            if cart.cart_id in self._tracked:
+            if cart.cart_id in self._tracked or cart.cart_id in self._served_orderless:
                 continue
             sid = self.station_of_pos.get(cart.pos)
             if sid is None:
                 continue
+            picks = self._pick_list(cart, sid)
+            if not picks:
+                continue
             self._tracked.add(cart.cart_id)
-            self.queues[sid].append((cart, self._sample_picks(sid)))
+            self.queues[sid].append((cart, picks))
+        self._served_orderless &= set(picking_by_id)  # forget once they leave
 
         # 2. Departures (cart left PICKING while queued or being served)
         for sid, queue in self.queues.items():
@@ -242,21 +262,58 @@ class PickerManager:
                 if serving:
                     self.busy_seconds += dt
                 if result is not None:
-                    _sku, walk_secs = result
+                    done_sku, walk_secs = result
                     self.picks_done += 1
                     self.walk_seconds_total += walk_secs
                     self._walk_sum_sq += walk_secs * walk_secs
+                    if had_cart is not None and had_cart.order is not None and hasattr(
+                        had_cart.order, "mark_picked"
+                    ):
+                        had_cart.order.mark_picked(done_sku)
                 # Cart finished (picker went idle with no pending picks)
                 if had_cart is not None and picker.cart is None and picker.state == Picker.IDLE:
                     self._tracked.discard(had_cart.cart_id)
                     self.carts_served += 1
+                    self._complete_station_if_done(had_cart)
+                    if had_cart.order is None:
+                        self._served_orderless.add(had_cart.cart_id)
+
+    def _complete_station_if_done(self, cart: Cart) -> None:
+        """Mark the station complete on the order once no lines remain here.
+
+        Called when a picker finishes a cart's list. Resume-safe: a cart
+        buffered away mid-picking and brought back only completes once its
+        genuinely last line at this station is picked."""
+        order = cart.order
+        if order is None or not hasattr(order, "skus_remaining_at"):
+            return
+        sid = self.station_of_pos.get(cart.pos)
+        if sid is None:
+            return
+        num = int(sid[1:])
+        if not order.skus_remaining_at(num) and num not in order.completed_stations:
+            order.complete_station(num)
+            logger.info(
+                "[Picker] C%d: all %d lines picked at %s — station complete",
+                cart.cart_id, order.items_at_station(num), sid,
+            )
 
     # -- reporting ---------------------------------------------------------
 
     def cart_done(self, cart: Cart) -> bool:
-        """Future dispatcher seam: True once this cart's picks are complete.
-        In shadow mode nothing calls this yet."""
-        return cart.cart_id not in self._tracked
+        """Dispatcher release seam: True once this cart's picks here are done.
+
+        Robust to tick ordering: a cart is NOT done while queued or being
+        served, nor while its order still has unpicked lines at this station
+        (covers the instant between entering PICKING and being queued)."""
+        if cart.cart_id in self._tracked:
+            return False
+        order = cart.order
+        if order is not None and hasattr(order, "skus_remaining_at"):
+            sid = self.station_of_pos.get(cart.pos)
+            if sid is not None:
+                return not order.skus_remaining_at(int(sid[1:]))
+        return True
 
     def stats(self) -> dict:
         n = self.picks_done

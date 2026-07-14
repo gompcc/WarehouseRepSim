@@ -61,10 +61,9 @@ CART_COLOR_IN_TRANSIT = (60, 200, 60)    # green
 CART_COLOR_IDLE       = (80, 140, 255)   # blue
 
 BOX_DEPOT_TIME     = 45.0   # seconds processing at box depot
-PICK_TIME_PER_ITEM = 90.0   # DEPRECATED: replaced by the picker walking model
-                            # (PRD §14) once stage 3 lands; still used by the
-                            # dispatcher until then
 PACKOFF_TIME       = 20.0   # seconds processing at pack-off
+# (The old flat PICK_TIME_PER_ITEM=90s rule is gone: station dwell is fully
+#  picker-gated — see PRD §14.6 and picker.py.)
 
 # Picker & product aisle model (PRD Section 14)
 NUM_SKUS            = 2000   # products, each with one pick slot in the aisles
@@ -73,8 +72,10 @@ RACK_LEVELS         = 2      # bi-level racking
 PICKERS_PER_STATION = 1      # human pickers serving each S station
 PICKER_WALK_SPEED   = 1.4    # m/s
 PICK_GRAB_TIME      = 10.0   # seconds to locate/grab one SKU line at the slot
-ORDER_MIN_LINES     = 1      # order = random set of 1-40 SKUs
-ORDER_MAX_LINES     = 40
+PICKS_PER_VISIT_MEAN = 4.0   # SKU lines a cart needs per station visit…
+PICKS_PER_VISIT_SD   = 2.0   # …sampled max(1, round(N(mean, sd)))
+ORDER_STATIONS_MIN   = 1     # stations an order visits (uniform)
+ORDER_STATIONS_MAX   = 9
 CART_COLOR_PROCESSING = (255, 165, 0)   # orange
 CART_COLOR_WAITING    = (180, 100, 255) # purple — buffered, waiting for station
 CART_COLOR_COMPLETED  = (200, 50, 50)   # red

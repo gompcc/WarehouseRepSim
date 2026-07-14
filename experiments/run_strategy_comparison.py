@@ -20,8 +20,8 @@ from datetime import datetime
 
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
-STRATEGY_ATTRS = ["eta_reservations", "global_assignment", "order_sequencing"]
-SHORT = {"eta_reservations": "ETA", "global_assignment": "HUN", "order_sequencing": "SEQ"}
+STRATEGY_ATTRS = ["eta_reservations", "global_assignment"]
+SHORT = {"eta_reservations": "ETA", "global_assignment": "HUN"}
 SEEDS = [11, 42, 77]
 # (agvs, carts): station-saturated, transport-bound, and low-WIP regimes
 CONFIGS = [(14, 25), (10, 25), (10, 15)]
@@ -65,7 +65,7 @@ def main() -> None:
 
     combos = [
         {attr: bool(bits & (1 << i)) for i, attr in enumerate(STRATEGY_ATTRS)}
-        for bits in range(8)
+        for bits in range(2 ** len(STRATEGY_ATTRS))
     ]
     tasks = [
         (c, s, duration, agvs, carts)

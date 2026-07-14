@@ -52,7 +52,7 @@ def draw_picker_info(
     calib = get_catalog().calibration_stats()
     live = manager.stats()
     lines = [
-        "PICKERS (shadow mode)",
+        "PICKERS (gating carts)" if manager.gating else "PICKERS (shadow mode)",
         f"{PICKERS_PER_STATION}/station · {PICKER_WALK_SPEED} m/s · grab {PICK_GRAB_TIME:.0f}s",
         f"picks/cart-visit: μ{PICKS_PER_VISIT_MEAN:.0f} σ{PICKS_PER_VISIT_SD:.0f}",
         f"walk/pick: μ{calib['mean_s']:.0f}s σ{calib['sd_s']:.0f}"

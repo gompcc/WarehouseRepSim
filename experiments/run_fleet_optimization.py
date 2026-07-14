@@ -27,8 +27,8 @@ from datetime import datetime
 
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
-STRATEGY_ATTRS = ["eta_reservations", "global_assignment", "order_sequencing"]
-SHORT = {"eta_reservations": "ETA", "global_assignment": "HUN", "order_sequencing": "SEQ"}
+STRATEGY_ATTRS = ["eta_reservations", "global_assignment"]
+SHORT = {"eta_reservations": "ETA", "global_assignment": "HUN"}
 
 SCREEN_SEED = 42
 CONFIRM_SEEDS = [11, 77]          # stage 2 adds these to the screening seed
@@ -45,7 +45,7 @@ def combo_name(strategies: dict) -> str:
 def all_combos() -> list[dict]:
     return [
         {attr: bool(bits & (1 << i)) for i, attr in enumerate(STRATEGY_ATTRS)}
-        for bits in range(8)
+        for bits in range(2 ** len(STRATEGY_ATTRS))
     ]
 
 

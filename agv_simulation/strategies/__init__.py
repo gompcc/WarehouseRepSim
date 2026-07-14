@@ -9,7 +9,6 @@ from .config import StrategyConfig, StrategyInfo, STRATEGY_INFO
 from .distances import DistanceMap
 from .eta_reservations import ETAReservations
 from .global_assignment import GlobalAssignment
-from .order_sequencing import OrderSequencing
 
 __all__ = [
     "StrategyConfig",
@@ -18,5 +17,4 @@ __all__ = [
     "DistanceMap",
     "ETAReservations",
     "GlobalAssignment",
-    "OrderSequencing",
 ]

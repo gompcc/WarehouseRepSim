@@ -13,11 +13,15 @@ from dataclasses import dataclass
 
 @dataclass
 class StrategyConfig:
-    """On/off switches for the dispatch strategy modules."""
+    """On/off switches for the dispatch strategy modules.
+
+    (Travel-window sequencing over true directed distances started as a
+    third toggle; it proved a consistent win and is now baked into the
+    baseline dispatcher — see ``Dispatcher._travel_window``.)
+    """
 
     eta_reservations: bool = False
     global_assignment: bool = False
-    order_sequencing: bool = False
 
     def active_names(self) -> list[str]:
         """Short names of enabled strategies (for logs/exports)."""
@@ -39,5 +43,4 @@ class StrategyInfo:
 STRATEGY_INFO: list[StrategyInfo] = [
     StrategyInfo("eta_reservations", "eta", "ETA reservations"),
     StrategyInfo("global_assignment", "hungarian", "Global assignment"),
-    StrategyInfo("order_sequencing", "sequencing", "Order sequencing"),
 ]

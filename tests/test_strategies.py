@@ -10,9 +10,7 @@ import pytest
 from agv_simulation.map_builder import build_map, build_graph
 from agv_simulation.models import Order, set_order_seed
 from agv_simulation.dispatcher import Dispatcher
-from agv_simulation.strategies import (
-    StrategyConfig, DistanceMap, OrderSequencing,
-)
+from agv_simulation.strategies import StrategyConfig, DistanceMap
 from agv_simulation.strategies.global_assignment import min_cost_assignment
 from agv_simulation.enums import TileType
 
@@ -131,19 +129,26 @@ def test_hungarian_beats_or_ties_greedy():
 
 
 # ----------------------------------------------------------------------
-# Order sequencing
+# Baked-in travel-window sequencing (directed distances, always on)
 # ----------------------------------------------------------------------
 
-def test_sequencing_prefers_forward_stations(world):
-    _, _, _, dist_map = world
-    seq = OrderSequencing(dist_map)
-
-    class FakeCart:
-        pos = (53, 23)  # at S7
-
-    # Remaining: S5 (behind) and S9 (ahead) — window must lead with S9
-    ordered = seq.order_candidates(FakeCart(), [5, 9])
+def test_travel_window_orders_by_directed_distance(world):
+    tiles, graph, _, _ = world
+    d = Dispatcher(tiles)
+    d._ensure_strategies(graph)
+    # From S7 (right bank): S9 is nearest ahead, S5 next on the same bank,
+    # S3 is a cross-bank trip and must rank last.
+    ordered = d._travel_window((53, 23), [3, 5, 9])
     assert ordered[0] == 9
+    assert ordered[-1] == 3
+    # Window caps candidates at TRAVEL_WINDOW
+    assert len(d._travel_window((53, 23), [1, 2, 3, 4, 5])) == d.TRAVEL_WINDOW
+
+
+def test_travel_window_without_distmap_passes_through(world):
+    tiles, _, _, _ = world
+    d = Dispatcher(tiles)  # no _ensure_strategies -> no distance map yet
+    assert d._travel_window((53, 23), [5, 9]) == [5, 9]
 
 
 # ----------------------------------------------------------------------
@@ -158,5 +163,5 @@ def test_default_config_is_baseline(world):
 
 
 def test_config_active_names():
-    cfg = StrategyConfig(eta_reservations=True, order_sequencing=True)
-    assert cfg.active_names() == ["eta", "sequencing"]
+    cfg = StrategyConfig(eta_reservations=True, global_assignment=True)
+    assert cfg.active_names() == ["eta", "hungarian"]

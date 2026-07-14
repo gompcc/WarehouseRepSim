@@ -73,7 +73,7 @@ def run_headless(
     env = Environment(event_jsonl=event_jsonl)
     env.agv_preload_remaining = num_agvs
     env.preload_remaining = num_carts
-    dispatcher = Dispatcher(env.tiles, strategies=strategies)
+    dispatcher = Dispatcher(env.tiles, strategies=strategies, pickers=env.pickers)
 
     total_ticks: int = 0
 
@@ -151,6 +151,7 @@ def run_headless(
         "agv_utilization": agv_utilization,
         "agv_blocked_fraction": agv_blocked_fraction,
         "station_fill": station_fill,
+        "picker_stats": env.pickers.stats(),
         "stuck_report": stuck_report,
         "sim_duration": env.sim_elapsed,
         "wall_clock_seconds": wall_elapsed,

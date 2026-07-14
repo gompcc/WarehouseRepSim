@@ -238,8 +238,13 @@ class Environment:
                 continue
 
             # Stuck watchdog: no progress, not carried, not actively processing.
+            # A PICKING cart with unpicked lines is being served / queued for
+            # a picker — that wait is workload, not a stuck condition.
             waited = self.sim_elapsed - since
-            processing = cart.process_timer > 0
+            processing = cart.process_timer > 0 or (
+                cart.state == CartState.PICKING
+                and not self.pickers.cart_done(cart)
+            )
             if (
                 cart.carried_by is None
                 and not processing

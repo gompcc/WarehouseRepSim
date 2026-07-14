@@ -218,10 +218,15 @@ def init_catalog(tiles: dict) -> Catalog:
 
 
 def get_catalog() -> Catalog:
+    """Return the catalog, lazily building it from the standard map.
+
+    Environment() initialises it explicitly; the lazy path exists so that
+    Order() and unit tests work without constructing an Environment. The
+    geometry is deterministic, so both paths yield the identical catalog."""
+    global _catalog
     if _catalog is None:
-        raise RuntimeError(
-            "SKU catalog not initialised — Environment() builds it via init_catalog()"
-        )
+        from .map_builder import build_map  # runtime import: avoids cycle
+        _catalog = Catalog(build_map())
     return _catalog
 
 

@@ -8,6 +8,8 @@ from .enums import CartState, JobType, TileType
 from .constants import (
     CART_COLOR_SPAWNED, CART_COLOR_IN_TRANSIT, CART_COLOR_PROCESSING,
     CART_COLOR_WAITING, CART_COLOR_COMPLETED, CART_COLOR_IDLE,
+    PICKS_PER_VISIT_MEAN, PICKS_PER_VISIT_SD,
+    ORDER_STATIONS_MIN, ORDER_STATIONS_MAX,
 )
 
 
@@ -65,7 +67,13 @@ def set_order_seed(seed: int | None) -> None:
 
 
 class Order:
-    """A picking order assigned to a cart."""
+    """A picking order: SKU lines grouped by the station that owns each SKU.
+
+    Per PRD §14.6/14.8a: an order visits a uniform 1–9 stations; at each it
+    needs ``max(1, round(N(4, 2)))`` distinct SKUs drawn from that station's
+    zoned range in the aisle catalog. ``picks`` is the flat SKU-id list;
+    pickers mark lines done via :meth:`mark_picked`.
+    """
 
     _next_id: int = 1
 
@@ -77,15 +85,40 @@ class Order:
             if _order_seed is not None
             else random
         )
-        length = rng.randint(1, 9)
-        self.picks: list[int] = [rng.randint(1, 9) for _ in range(length)]
-        self.stations_to_visit: list[int] = sorted(set(self.picks))
+        from .aisles import get_catalog  # runtime import: models loads first
+        catalog = get_catalog()
+        all_stations = sorted(catalog.station_skus)  # ["S1", ..., "S9"]
+        n_stations = rng.randint(ORDER_STATIONS_MIN, min(ORDER_STATIONS_MAX, len(all_stations)))
+        visited = sorted(rng.sample(all_stations, n_stations))
+
+        self.picks: list[int] = []                     # flat SKU ids
+        self.skus_by_station: dict[int, list[int]] = {}
+        for sid in visited:
+            zone = catalog.station_skus[sid]
+            n = max(1, round(rng.gauss(PICKS_PER_VISIT_MEAN, PICKS_PER_VISIT_SD)))
+            skus = sorted(rng.sample(zone, min(n, len(zone))))
+            self.skus_by_station[int(sid[1:])] = skus
+            self.picks.extend(skus)
+
+        self.stations_to_visit: list[int] = sorted(self.skus_by_station)
         self.completed_stations: list[int] = []
+        self.picked_skus: set[int] = set()
         self.packed: bool = False  # True once the cart has reached Pack-off
 
     def items_at_station(self, station_num: int) -> int:
-        """Return the number of items to pick at *station_num*."""
-        return self.picks.count(station_num)
+        """Return the number of SKU lines to pick at *station_num*."""
+        return len(self.skus_by_station.get(station_num, []))
+
+    def skus_remaining_at(self, station_num: int) -> list[int]:
+        """Unpicked SKU lines at *station_num* (drives picker work + release)."""
+        return [
+            s for s in self.skus_by_station.get(station_num, [])
+            if s not in self.picked_skus
+        ]
+
+    def mark_picked(self, sku: int) -> None:
+        """Record one SKU line as picked (called by the station's picker)."""
+        self.picked_skus.add(sku)
 
     def next_station(self) -> int | None:
         """Return the next unvisited station number, or ``None``."""
