@@ -53,8 +53,7 @@ AGV_SPEED        = 1.0      # tiles per second (= 1 / TILE_TRAVEL_TIME)
 AGV_COLOR        = (255, 60, 60)
 AGV_SPAWN_TILE   = (15, 7)  # leftmost North Highway tile at spawn exit
 
-# Cart constants
-CART_SPAWN_TILES = [(14, 7)]
+# Cart constants (carts spawn at Box Depot tiles — see Environment.spawn_cart)
 PICKUP_TIME  = 5.0          # seconds to pick up a cart
 DROPOFF_TIME = 5.0          # seconds to drop off a cart
 CART_COLOR_SPAWNED    = (255, 255, 255)  # white
@@ -89,12 +88,6 @@ MAX_CONCURRENT_DISPATCHES = 12  # max AGVs dispatched at once (prevents highway 
 PRELOAD_AGV_COUNT      = 10
 PRELOAD_CART_COUNT     = 25
 PRELOAD_SPAWN_INTERVAL = 5.0   # sim-seconds between pre-load cart spawns
-
-# Fixed AGV parking spots shared by GUI and headless (near stations)
-DEFAULT_AGV_SPOTS = [
-    (22, 9), (24, 16), (22, 22), (24, 28), (22, 34),
-    (51, 9), (53, 15), (51, 21), (53, 27), (51, 33),
-]
 
 # Environment audit
 STUCK_WARN_SECONDS = 300.0  # no cart progress for this long → stuck event

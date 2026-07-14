@@ -46,7 +46,8 @@ def build_map() -> dict[tuple[int, int], Tile]:
     fill_rect(15, 0, 22, 6, TileType.AGV_SPAWN)
 
     # 2. CART SPAWN (left edge of legacy area, row 7 only)
-    put(14, 7, TileType.CART_SPAWN)
+    # (14,7) was the legacy cart spawn; carts now enter at the Box Depot.
+    put(14, 7, TileType.PARKING)
 
     # 3. BOX DEPOT (top-centre)
     fill_rect(28, 1, 38, 4, TileType.BOX_DEPOT, "Box_Depot")

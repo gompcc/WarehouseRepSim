@@ -77,12 +77,13 @@ def main() -> None:
     toggle_rects: dict = {}
     strategy_events: list[tuple[float, str]] = []  # graph markers
 
-    # Pre-load AGVs and auto-spawn carts one at a time (every 5 sim-seconds)
-    env.place_agvs(PRELOAD_AGV_COUNT)
+    # Fair spawn model: depot fills with carts at t=0 (then 1 per 5 sim-s
+    # into free un-targeted depot tiles); AGVs stream in single-file
+    # through the spawn tile.
+    env.agv_preload_remaining = PRELOAD_AGV_COUNT
     env.preload_remaining = PRELOAD_CART_COUNT
-    if agvs:
-        selected_agv = agvs[0]
-    logger.info("Pre-loaded %d AGVs, auto-spawning %d carts", len(agvs), PRELOAD_CART_COUNT)
+    logger.info("Streaming %d AGVs via spawn tile; spawning %d carts at Box Depot",
+                PRELOAD_AGV_COUNT, PRELOAD_CART_COUNT)
 
     running = True
     while running:
@@ -125,7 +126,7 @@ def main() -> None:
 
                 elif event.key == pygame.K_c:
                     if env.spawn_cart() is None:
-                        logger.info("All cart spawn tiles occupied!")
+                        logger.info("Box Depot full or fully reserved — no cart spawned!")
 
                 elif event.key == pygame.K_p:
                     if selected_agv and selected_agv.current_job:
@@ -334,6 +335,7 @@ def main() -> None:
         sim_dt = dt * time_scale if not paused else 0.0
 
         if not paused:
+            env.reserved_targets = dispatcher.job_targets()
             env.step(sim_dt)
             dispatcher.update(carts, agvs, graph, tiles, sim_elapsed=env.sim_elapsed)
             env.audit(sim_dt)

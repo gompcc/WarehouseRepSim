@@ -134,3 +134,22 @@ blocked% so it likely sustains more AGVs before the congestion cliff.
       combo confirmed on seeds 11/77; per-combo optimum + at-own-optimum
       comparison → results/fleet_optimization.md
 - [ ] Record findings here + lessons.md when the run completes
+
+## Addendum 2: policy-fair spawn model (2026-07-14, user request)
+
+Old model teleported AGVs onto 10 handpicked parking spots and trickled
+carts in from a west-edge spawn tile — both potentially favor some policies.
+New model (identical GUI + headless):
+- [x] Carts spawn AT the Box Depot: 8 tiles fill at t=0, then 1 per 5 sim-s
+      into any tile that is free AND not targeted by an in-flight job
+      (dispatcher publishes job_targets() → env.reserved_targets each tick);
+      spawned carts start AT_BOX_DEPOT with the full 45s load timer, then an
+      AGV must collect them. Legacy cart-spawn tile removed from the map.
+- [x] AGVs stream in single-file via AGV_SPAWN_TILE — next spawns only once
+      the previous has left the tile. place_agvs()/DEFAULT_AGV_SPOTS removed.
+- [x] 6 new tests (53 total green); 1h smoke run clean (0 teleports);
+      GUI render verified under new model
+- [ ] Fleet optimization re-run under new model (in progress) — per-combo
+      optimal fleet + at-own-optimum comparison
+NOTE: absolute o/hr numbers are NOT comparable with pre-spawn-model results
+(first-hour throughput is higher — no west-edge ferry leg; AGV ramp-in).

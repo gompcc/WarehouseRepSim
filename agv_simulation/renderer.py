@@ -158,7 +158,6 @@ def draw_labels(
     label("North Highway", 49 * ts, NORTH_HWY_ROW * ts + ts // 2, font_sm, bg=False)
     label("East Highway", 39 * ts, EAST_HWY_ROW * ts + ts // 2, font_sm, bg=False)
     label("AGV Spawn", 19 * ts, 3 * ts, font_sm)
-    label("Cart Spawn", int(17 * ts), int(9.5 * ts), font_sm)
 
 
 def draw_agv(surface: pygame.Surface, agv: AGV, font: pygame.font.Font) -> None:

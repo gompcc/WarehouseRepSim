@@ -29,8 +29,9 @@ from .map_builder import build_map, build_graph
 from .aisles import init_catalog
 from .picker import PickerManager
 from .constants import (
-    CART_SPAWN_TILES, PRELOAD_SPAWN_INTERVAL, AUTO_SPAWN_INTERVAL,
-    STUCK_WARN_SECONDS, DEFAULT_AGV_SPOTS,
+    PRELOAD_SPAWN_INTERVAL, AUTO_SPAWN_INTERVAL,
+    STUCK_WARN_SECONDS,
+    AGV_SPAWN_TILE, BOX_DEPOT_TIME,
 )
 
 if TYPE_CHECKING:
@@ -78,11 +79,24 @@ class Environment:
         self.sim_elapsed: float = 0.0
         self.events = EventLog(jsonl_path=event_jsonl)
 
-        # Cart spawning (preload cadence, then optional slow auto-spawn)
+        # Cart spawning — carts enter the world AT the Box Depot (the box
+        # machines are the physical entry point). A cart may only spawn into
+        # a depot tile that is free AND not targeted by any dispatcher job
+        # (the driver loop publishes job targets via ``reserved_targets``).
         self.preload_remaining: int = 0
         self.auto_spawn: bool = False
         self.spawn_enabled: bool = True
         self._spawn_timer: float = 0.0
+        self._initial_fill_done: bool = False
+        self.reserved_targets: set[tuple[int, int]] = set()
+        self._depot_tiles: list[tuple[int, int]] = sorted(
+            pos for pos, t in self.tiles.items()
+            if t.station_id == "Box_Depot" and t.tile_type == TileType.PARKING
+        )
+
+        # AGV spawning — AGVs stream in through AGV_SPAWN_TILE one at a
+        # time: the next may only spawn once the previous has left the tile.
+        self.agv_preload_remaining: int = 0
 
         # Watchdog / audit state
         self.stuck_threshold = stuck_threshold
@@ -97,48 +111,64 @@ class Environment:
     # Entity placement / spawning
     # ------------------------------------------------------------------
 
-    def place_agvs(self, count: int, spots: list[tuple[int, int]] | None = None) -> None:
-        """Place *count* AGVs at fixed spots, overflowing to free parking tiles."""
-        spots = spots if spots is not None else DEFAULT_AGV_SPOTS
-        used = {a.pos for a in self.agvs}
-        extra = [
-            pos for pos in self.graph
-            if self.tiles[pos].tile_type in (TileType.PARKING, TileType.AGV_SPAWN)
-            and self.tiles[pos].station_id is None
-            and pos not in set(spots) | used
-        ]
-        for i in range(count):
-            if i < len(spots) and spots[i] not in used:
-                pos = spots[i]
-            elif extra:
-                pos = extra.pop(0)
-            else:
-                logger.warning("No parking spot for AGV %d", i + 1)
-                continue
-            agv = AGV(pos)
-            self.agvs.append(agv)
-            self.events.record(self.sim_elapsed, "agv_spawned", agv=agv.agv_id, pos=pos)
-
     def spawn_cart(self) -> Cart | None:
-        """Spawn one cart at the first free spawn tile, or ``None`` if all occupied."""
+        """Spawn one cart at a free, un-targeted Box Depot tile.
+
+        The new cart is immediately loading boxes (``AT_BOX_DEPOT`` with the
+        full processing timer); an AGV must come collect it afterwards.
+        Returns ``None`` when every depot tile is occupied or reserved by an
+        in-flight job (e.g. a cart returning from Pack-off).
+        """
         occupied = {c.pos for c in self.carts if c.carried_by is None}
-        for spawn_pos in CART_SPAWN_TILES:
-            if spawn_pos not in occupied:
+        blocked = occupied | self.reserved_targets
+        for spawn_pos in self._depot_tiles:
+            if spawn_pos not in blocked:
                 cart = Cart(spawn_pos)
+                cart.state = CartState.AT_BOX_DEPOT
+                cart.process_timer = BOX_DEPOT_TIME
                 self.carts.append(cart)
                 self.events.record(
                     self.sim_elapsed, "cart_spawned", cart=cart.cart_id, pos=spawn_pos,
                 )
                 logger.info(
-                    "[Env] Spawned Cart C%d at %s (%d preload remaining)",
+                    "[Env] Spawned Cart C%d at Box Depot %s (%d preload remaining)",
                     cart.cart_id, spawn_pos, max(0, self.preload_remaining - 1),
                 )
                 return cart
         return None
 
+    def spawn_agv(self) -> AGV | None:
+        """Spawn one AGV at ``AGV_SPAWN_TILE`` if the tile is clear.
+
+        AGVs enter single-file: the next can only spawn once the previous
+        one has driven off the spawn tile.
+        """
+        if any(a.pos == AGV_SPAWN_TILE for a in self.agvs):
+            return None
+        agv = AGV(AGV_SPAWN_TILE)
+        self.agvs.append(agv)
+        self.events.record(
+            self.sim_elapsed, "agv_spawned", agv=agv.agv_id, pos=AGV_SPAWN_TILE,
+        )
+        return agv
+
     def _spawn_tick(self, dt: float) -> None:
+        # AGVs: stream in as fast as the spawn tile clears.
+        if self.agv_preload_remaining > 0:
+            if self.spawn_agv():
+                self.agv_preload_remaining -= 1
+
         if not self.spawn_enabled:
             return
+
+        # Carts: fill the whole depot at t=0 (every experiment starts with
+        # the same full depot), then one per interval as tiles free up.
+        if not self._initial_fill_done:
+            self._initial_fill_done = True
+            while self.preload_remaining > 0 and self.spawn_cart():
+                self.preload_remaining -= 1
+            return
+
         if self.preload_remaining <= 0 and not self.auto_spawn:
             return
         interval = (

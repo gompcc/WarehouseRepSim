@@ -82,7 +82,7 @@ for k, v in result.items():
 - Output is **huge** (~1 MB of per-tick dispatcher logs). Pipe through `tail -80` or save to a file — don't dump into context.
 - Results are auto-appended to `results/sim_results.md` on completion.
 - Override any arg: `run_headless(num_agvs=8, num_carts=20, sim_duration=3600, tick_dt=0.1)`.
-- Entity placement matches the GUI exactly (same 10 AGV spots, same cart spawn cadence) so headless ↔ GUI results are directly comparable.
+- **Spawn model (policy-fair)**: carts enter the world AT the Box Depot — 8 tiles fill at t=0, then one cart per 5 sim-s into any depot tile that is free and not targeted by an in-flight job, until `num_carts` have entered. AGVs stream in single-file through the spawn tile (next spawns only when the previous has driven off). Identical in GUI and headless, so results are directly comparable. There is no cart-spawn tile anymore.
 - **Controlled experiments**: pass `seed=42` for a deterministic order stream (order N is identical across runs/policies — required for fair A/B), and `strategies={'eta_reservations': True, 'global_assignment': True, 'order_sequencing': True}` (any subset) to enable dispatch strategy modules (`agv_simulation/strategies/`). All off = exact baseline. GUI has the same toggles as clickable switches (seeded 42 by default).
 
 ### Strategy A/B comparison

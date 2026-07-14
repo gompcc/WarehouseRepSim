@@ -43,10 +43,12 @@ def run_headless(
 ) -> dict:
     """Run the simulation without pygame, using a fixed timestep.
 
-    Entity placement matches the GUI exactly:
-    - AGVs placed at fixed parking spots near stations
-    - Carts spawned one at a time at cart spawn tile, every 5 sim-seconds
-    - Spawning stops after ``num_carts`` carts (no continuous spawning)
+    Entity entry matches the GUI exactly (policy-fair spawn model):
+    - Carts spawn AT the Box Depot: the depot's 8 tiles fill at t=0, then
+      one cart per 5 sim-seconds into any tile that is free and not
+      targeted by an in-flight job, until ``num_carts`` have entered
+    - AGVs stream in single-file through AGV_SPAWN_TILE — the next spawns
+      only once the previous has driven off the tile
 
     Returns a dict of performance metrics, including the environment's
     ``stuck_report`` (stuck carts, buffer thrashing, physics violations).
@@ -69,23 +71,25 @@ def run_headless(
     wall_start = _time.monotonic()
 
     env = Environment(event_jsonl=event_jsonl)
-    env.place_agvs(num_agvs)
+    env.agv_preload_remaining = num_agvs
     env.preload_remaining = num_carts
     dispatcher = Dispatcher(env.tiles, strategies=strategies)
 
     total_ticks: int = 0
 
-    logger.info("Headless: %d AGVs, spawning %d carts over %ds sim-time"
-                " (seed=%s, strategies=%s)",
+    logger.info("Headless: streaming %d AGVs, spawning %d carts at Box Depot"
+                " over %ds sim-time (seed=%s, strategies=%s)",
                 num_agvs, num_carts, int(sim_duration), seed,
                 dispatcher.strategies.active_names() or "baseline")
 
-    # Utilization tracking
-    idle_ticks: dict[int, int] = {agv.agv_id: 0 for agv in env.agvs}
-    blocked_ticks: dict[int, int] = {agv.agv_id: 0 for agv in env.agvs}
-    total_tracked: dict[int, int] = {agv.agv_id: 0 for agv in env.agvs}
+    # Utilization tracking (AGVs appear dynamically as they stream in)
+    from collections import defaultdict
+    idle_ticks: dict[int, int] = defaultdict(int)
+    blocked_ticks: dict[int, int] = defaultdict(int)
+    total_tracked: dict[int, int] = defaultdict(int)
 
     while env.sim_elapsed < sim_duration:
+        env.reserved_targets = dispatcher.job_targets()
         env.step(tick_dt)
         dispatcher.update(
             env.carts, env.agvs, env.graph, env.tiles, sim_elapsed=env.sim_elapsed,

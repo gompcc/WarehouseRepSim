@@ -103,6 +103,16 @@ class Dispatcher:
                 ns = cart.order.next_station()
         return ns
 
+    def job_targets(self) -> set[tuple[int, int]]:
+        """Tiles targeted by any pending/active job.
+
+        Published to the Environment each tick so cart spawning at the Box
+        Depot never grabs a tile an in-flight cart is already heading to.
+        """
+        return {j.target_pos for j in self.pending_jobs} | {
+            j.target_pos for j in self.active_jobs
+        }
+
     def _occupied_tiles(self, carts: list[Cart]) -> set[tuple[int, int]]:
         """Return tiles physically occupied by stationary carts (no job reservations)."""
         return {c.pos for c in carts if c.carried_by is None}
@@ -248,6 +258,11 @@ class Dispatcher:
             elif cart.state == CartState.AT_BOX_DEPOT and cart.process_timer <= 0:
                 if cart.order is None:
                     cart.order = Order()
+                    # Depot-born carts (new spawn model) start their cycle
+                    # clock here; recycled carts were stamped on return.
+                    self.cart_start_times.setdefault(
+                        cart.cart_id, self._sim_elapsed,
+                    )
                     logger.info(
                         "[Order #%d] Cart C%d: picks=%s, stations=%s",
                         cart.order.order_id, cart.cart_id,
