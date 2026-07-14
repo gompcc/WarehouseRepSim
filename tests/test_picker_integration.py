@@ -49,11 +49,13 @@ def test_orders_are_sku_based_and_zone_consistent():
             for sku in skus:
                 # Every SKU must genuinely belong to that station's zone
                 assert cat.slots[sku].station == f"S{num}"
-    per_visit = [
-        len(skus) for o in orders for skus in o.skus_by_station.values()
-    ]
-    mean = sum(per_visit) / len(per_visit)
-    assert 3.3 < mean < 4.7, mean  # target μ4 σ2, min 1
+    totals = [len(o.picks) for o in orders]
+    mean = sum(totals) / len(totals)
+    assert 18.0 < mean < 22.0, mean  # target μ20 σ9, min 1
+    var = sum((t - mean) ** 2 for t in totals) / len(totals)
+    assert 7.0 < var ** 0.5 < 11.0, var ** 0.5  # sd ≈ 9
+    for o in orders:
+        assert len(set(o.picks)) == len(o.picks)  # distinct SKU lines
 
 
 def test_release_rule_holds_cart_until_picked():

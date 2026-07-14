@@ -9,7 +9,12 @@ COMMITTED through `3f27a16`. Tree was clean at handoff except `.claude/`.
   are picked (90s flat rule DELETED). Seeded 1h baseline: 23 orders/hr,
   pickers 81% busy (binding constraint), 0 left early. 60 tests green.
 - 2000 SKUs with half-normal popularity (SKU 1 ≈ 90× SKU 2000); orders =
-  1–9 stations × max(1, round(N(4,2))) popularity-weighted zone SKUs.
+  max(1, round(N(20, 9))) SKUs sampled popularity-weighted in **SKU space**
+  (user-set 2026-07-14; implements EXPERIMENT_DESIGN F1 — identical demand
+  across slotting arms, checksum-verified; stations visited are derived,
+  now ~6.5–7.4 mean). BOX_DEPOT_TIME 45→60 s (user-set). New seeded 1h
+  baseline: 19 orders/hr, cycle 38.6 min, pickers 0.59 busy (constraint
+  shifted toward transport), 0 left early. Old numbers NOT comparable.
 - 4 slotting strategies toggleable via `run_headless(slotting=...)`:
   demand-weighted one-way walk = sequential 17.1 m | aisle_proximal 17.0 m |
   fibonacci 18.0 m (WORSE — pickers launch from stations, not the track) |

@@ -44,9 +44,9 @@ per-run rows (arm, seed, config, metrics) for the figures.
 | Seeds | **5 seeds: 11, 42, 77, 101, 137**, identical across all arms (paired) | 3 seeds was the house standard; 5 tightens the min–max band enough for 3% decisions |
 | Fleet (primary) | 10 AGVs / 25 carts | Default, matches results history, picker-bound = realistic point |
 | Fleet (secondary) | Section A: 14/25 (transport slack) · Section B: 10/15 (transport-bound, low WIP) | One robustness point each — enough to show whether rankings flip with the regime, without a full grid |
-| Fixed | 1 picker/station, walk calibration (`WALK_TIME_FIXED=2.93`, `WALK_TIME_SCALE=1.0330`), `PICK_GRAB_TIME=10`, station capacities (`STATIONS`), depot 45 s, packoff 20 s, spawn cadence (depot fill + 1 cart/5 s), `_PICKER_RNG_SEED` | Everything not under test is frozen |
+| Fixed | 1 picker/station, walk calibration (`WALK_TIME_FIXED=2.93`, `WALK_TIME_SCALE=1.0330`), `PICK_GRAB_TIME=10`, station capacities (`STATIONS`), depot 60 s (user-set 2026-07-14, was 45 s), packoff 20 s, spawn cadence (depot fill + 1 cart/5 s), `_PICKER_RNG_SEED` | Everything not under test is frozen |
 | Decision rule | Adopt an arm iff paired mean Δ(primary metric) ≥ **+3%** vs its baseline AND the delta is positive on ≥ 4/5 seeds. Report mean [min–max], never a bare mean. | Guards against seed noise without heavyweight stats |
-| Validity gate | `stuck_report.stuck_events == 0`, `teleport_events == 0`, `carts_left_early` not exploding vs baseline. A run failing the gate invalidates the arm until fixed — no averaging over broken runs. | Physics/deadlock bugs masquerade as policy effects |
+| Validity gate | `stuck_report.stuck_events == 0`, `teleport_events == 0`, `carts_left_early` not exploding vs baseline. A run failing the gate invalidates the arm until fixed — no averaging over broken runs. **Known issue (2026-07-14): the stuck watchdog flags carts legitimately queued in PICKING (~90–100 events/h at baseline) — exempt queued-for-picker carts from the watchdog before running, or the gate can never pass.** | Physics/deadlock bugs masquerade as policy effects |
 
 Run budget: Section A = 4×5 + 4×3 = 32 runs; Section B = 8×5 + 3×5 = 55 runs;
 +1 headline cell ×5 = ~92 runs ≈ 60 min wall at 8 parallel workers
@@ -123,17 +123,17 @@ number is one the reader can't act on.
 ## 5. Fairness rules
 
 - **F1 — Demand must be defined in SKU space, not station space.**
-  Today `Order.__init__` samples stations first, then SKUs *from each
-  station's zone* (`models.py:91-101`). Under a different slotting the zones
-  differ, so the "same seed" would produce **different demand per arm** —
-  invalid A/B. Required change: seeded order N draws its SKU line list from
-  the global catalog (popularity-weighted), holding the total-lines
-  distribution equivalent to today's (Σ over U(1,9) station draws of
-  max(1, round(N(4,2))) lines); the *stations visited* are then derived from
-  the active slotting's zoning. Slotting legitimately changing how many
-  stations an order touches is an **effect to measure, not a confound to
-  remove**. Verify with a checksum: for a given seed, order N's SKU multiset
-  must be byte-identical across all 4 slotting arms (assert in the runner).
+  **IMPLEMENTED 2026-07-14**: `Order.__init__` now draws
+  `max(1, round(N(20, 9)))` distinct SKUs popularity-weighted from the
+  global catalog (`Catalog.sample_skus`); the order-size distribution is
+  user-set (mean 20 products/cart, SD 9 — replaces the old
+  U(1,9) stations × N(4,2) lines mixture). The *stations visited* are
+  derived from the active slotting's zoning. Slotting legitimately changing
+  how many stations an order touches is an **effect to measure, not a
+  confound to remove**. Verify with a checksum: for a given seed, order N's
+  SKU multiset must be byte-identical across all 4 slotting arms (assert in
+  the runner). NOTE: results predating this change are not comparable
+  (order sizes and station-visit counts both shifted).
 - **F2 — Never recalibrate walk time per arm.** `WALK_TIME_FIXED/SCALE` were
   fit to make the *baseline* geometry hit μ30/σ10. Re-fitting per slotting
   arm would erase the very effect under test. Freeze the constants; report

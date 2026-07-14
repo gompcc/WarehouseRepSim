@@ -8,8 +8,7 @@ from .enums import CartState, JobType, TileType
 from .constants import (
     CART_COLOR_SPAWNED, CART_COLOR_IN_TRANSIT, CART_COLOR_PROCESSING,
     CART_COLOR_WAITING, CART_COLOR_COMPLETED, CART_COLOR_IDLE,
-    PICKS_PER_VISIT_MEAN, PICKS_PER_VISIT_SD,
-    ORDER_STATIONS_MIN, ORDER_STATIONS_MAX,
+    ORDER_LINES_MEAN, ORDER_LINES_SD,
 )
 
 
@@ -69,10 +68,12 @@ def set_order_seed(seed: int | None) -> None:
 class Order:
     """A picking order: SKU lines grouped by the station that owns each SKU.
 
-    Per PRD §14.6/14.8a: an order visits a uniform 1–9 stations; at each it
-    needs ``max(1, round(N(4, 2)))`` distinct SKUs drawn from that station's
-    zoned range in the aisle catalog. ``picks`` is the flat SKU-id list;
-    pickers mark lines done via :meth:`mark_picked`.
+    An order is ``max(1, round(N(20, 9)))`` distinct products, sampled
+    popularity-weighted in SKU space — demand is independent of slot
+    placement, so every slotting strategy faces the identical order stream
+    (EXPERIMENT_DESIGN.md fairness rule). ``stations_to_visit`` is derived
+    from where the catalog places each sampled SKU. ``picks`` is the flat
+    SKU-id list; pickers mark lines done via :meth:`mark_picked`.
     """
 
     _next_id: int = 1
@@ -87,19 +88,16 @@ class Order:
         )
         from .aisles import get_catalog  # runtime import: models loads first
         catalog = get_catalog()
-        all_stations = sorted(catalog.station_skus)  # ["S1", ..., "S9"]
-        n_stations = rng.randint(ORDER_STATIONS_MIN, min(ORDER_STATIONS_MAX, len(all_stations)))
-        visited = sorted(rng.sample(all_stations, n_stations))
+        n_lines = max(1, round(rng.gauss(ORDER_LINES_MEAN, ORDER_LINES_SD)))
 
         self.picks: list[int] = []                     # flat SKU ids
         self.skus_by_station: dict[int, list[int]] = {}
-        for sid in visited:
-            n = max(1, round(rng.gauss(PICKS_PER_VISIT_MEAN, PICKS_PER_VISIT_SD)))
-            # Popularity-weighted: hot SKUs (low ids) appear in many orders,
-            # which is what makes slotting strategies matter.
-            skus = catalog.sample_zone_skus(sid, n, rng)
-            self.skus_by_station[int(sid[1:])] = skus
-            self.picks.extend(skus)
+        # Popularity-weighted: hot SKUs (low ids) appear in many orders,
+        # which is what makes slotting strategies matter.
+        for sku in catalog.sample_skus(n_lines, rng):
+            num = int(catalog.station_of(sku)[1:])
+            self.skus_by_station.setdefault(num, []).append(sku)
+            self.picks.append(sku)
 
         self.stations_to_visit: list[int] = sorted(self.skus_by_station)
         self.completed_stations: list[int] = []

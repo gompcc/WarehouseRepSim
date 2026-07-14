@@ -245,13 +245,12 @@ class Catalog:
 
     # -- demand ------------------------------------------------------------
 
-    def sample_zone_skus(self, station_id: str, n: int, rng) -> list[int]:
-        """Popularity-weighted sample WITHOUT replacement from a zone."""
-        zone = self.station_skus.get(station_id, [])
-        if not zone:
+    def _weighted_sample(self, pool: list[int], n: int, rng) -> list[int]:
+        """Popularity-weighted sample WITHOUT replacement from *pool*."""
+        if not pool:
             return []
-        n = min(n, len(zone))
-        pool = list(zone)
+        n = min(n, len(pool))
+        pool = list(pool)
         weights = [self.weights[s] for s in pool]
         chosen: list[int] = []
         for _ in range(n):
@@ -264,6 +263,16 @@ class Catalog:
                     weights.pop(i)
                     break
         return sorted(chosen)
+
+    def sample_zone_skus(self, station_id: str, n: int, rng) -> list[int]:
+        """Popularity-weighted sample WITHOUT replacement from a zone."""
+        return self._weighted_sample(self.station_skus.get(station_id, []), n, rng)
+
+    def sample_skus(self, n: int, rng) -> list[int]:
+        """Popularity-weighted sample WITHOUT replacement from the whole
+        catalog (SKU space) — demand independent of slot placement, so
+        every slotting strategy faces the identical order stream."""
+        return self._weighted_sample(sorted(self.slots), n, rng)
 
     def demand_weighted_walk_m(self) -> float:
         """Mean one-way walk per pick, weighted by SKU demand — THE slotting
