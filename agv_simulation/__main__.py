@@ -24,9 +24,15 @@ from .agv import AGV
 from .map_builder import verify_graph
 from .environment import Environment
 from .dispatcher import Dispatcher
+from .models import set_order_seed
 from .renderer import render
+from .strategies import STRATEGY_INFO
 
 logger = logging.getLogger(__name__)
+
+# Fixed order-stream seed so GUI sessions are comparable with headless A/B
+# runs (same demand every session; toggle strategies mid-run to compare).
+GUI_ORDER_SEED = 42
 
 
 def main() -> None:
@@ -57,6 +63,9 @@ def main() -> None:
 
     verify_graph(graph, tiles)
 
+    set_order_seed(GUI_ORDER_SEED)
+    logger.info("Order stream seeded (%d) — comparable across sessions", GUI_ORDER_SEED)
+
     dispatcher = Dispatcher(tiles)
 
     agvs = env.agvs
@@ -65,6 +74,8 @@ def main() -> None:
     time_scale: float = SPEED_STEPS[-1]
     speed_index: int = len(SPEED_STEPS) - 1
     paused: bool = False
+    toggle_rects: dict = {}
+    strategy_events: list[tuple[float, str]] = []  # graph markers
 
     # Pre-load AGVs and auto-spawn carts one at a time (every 5 sim-seconds)
     env.place_agvs(PRELOAD_AGV_COUNT)
@@ -263,6 +274,23 @@ def main() -> None:
 
             elif event.type == pygame.MOUSEBUTTONDOWN and event.button == 1:
                 mx, my = event.pos
+                # Strategy toggle switches (panel)
+                clicked_toggle = None
+                for attr, rect in toggle_rects.items():
+                    if rect.collidepoint(mx, my):
+                        clicked_toggle = attr
+                        break
+                if clicked_toggle:
+                    now_on = not getattr(dispatcher.strategies, clicked_toggle)
+                    setattr(dispatcher.strategies, clicked_toggle, now_on)
+                    label = next(
+                        i.label for i in STRATEGY_INFO if i.attr == clicked_toggle
+                    )
+                    state = "ON" if now_on else "OFF"
+                    strategy_events.append((env.sim_elapsed, f"{label} {state}"))
+                    logger.info("[Strategy] %s -> %s (t=%.0fs)",
+                                label, state, env.sim_elapsed)
+                    continue
                 if mx >= MAP_WIDTH:
                     continue
                 if selected_agv and selected_agv.current_job:
@@ -310,10 +338,12 @@ def main() -> None:
             dispatcher.update(carts, agvs, graph, tiles, sim_elapsed=env.sim_elapsed)
             env.audit(sim_dt)
 
-        render(
+        toggle_rects = render(
             screen, tiles, font_sm, font_md, agvs, selected_agv, time_scale,
             carts, dispatcher=dispatcher, sim_elapsed=env.sim_elapsed,
             paused=paused, auto_spawn=env.spawn_enabled,
+            strategy_events=strategy_events,
+            pickers=env.pickers,
         )
         pygame.display.flip()
 

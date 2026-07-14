@@ -53,6 +53,17 @@ class Cart:
             return CART_COLOR_IDLE
 
 
+_order_seed: int | None = None
+
+
+def set_order_seed(seed: int | None) -> None:
+    """Fix the order stream: with a seed, order N's contents are identical
+    across runs regardless of *when* it is created — required for fair A/B
+    comparison of dispatch strategies against the same demand."""
+    global _order_seed
+    _order_seed = seed
+
+
 class Order:
     """A picking order assigned to a cart."""
 
@@ -61,8 +72,13 @@ class Order:
     def __init__(self) -> None:
         self.order_id: int = Order._next_id
         Order._next_id += 1
-        length = random.randint(1, 9)
-        self.picks: list[int] = [random.randint(1, 9) for _ in range(length)]
+        rng = (
+            random.Random(_order_seed * 1_000_003 + self.order_id)
+            if _order_seed is not None
+            else random
+        )
+        length = rng.randint(1, 9)
+        self.picks: list[int] = [rng.randint(1, 9) for _ in range(length)]
         self.stations_to_visit: list[int] = sorted(set(self.picks))
         self.completed_stations: list[int] = []
         self.packed: bool = False  # True once the cart has reached Pack-off

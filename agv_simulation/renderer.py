@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import bisect
 from typing import TYPE_CHECKING
 
 import pygame
@@ -9,6 +10,7 @@ import pygame
 from .enums import TileType, AGVState, CartState
 from .constants import (
     TILE_SIZE, MAP_WIDTH, MAP_HEIGHT, PANEL_WIDTH,
+    THROUGHPUT_STRIP_H, WINDOW_HEIGHT,
     BG_COLOR, OUTLINE_COLOR, LABEL_COLOR, LABEL_BG,
     TILE_COLORS, AGV_COLOR,
     PANEL_BG, PANEL_TEXT, PANEL_HEADER, PANEL_SEPARATOR,
@@ -16,6 +18,10 @@ from .constants import (
     NORTH_HWY_ROW, EAST_HWY_ROW,
 )
 from .models import STATIONS
+from .strategies import STRATEGY_INFO
+
+# Rolling window for the live orders/hr graph (sim-seconds)
+THROUGHPUT_WINDOW = 900.0
 
 if TYPE_CHECKING:
     from .agv import AGV
@@ -53,8 +59,13 @@ def draw_labels(
     font_sm: pygame.font.Font,
     font_md: pygame.font.Font,
     station_fill: dict | None = None,
+    eta_forecast: dict | None = None,
 ) -> None:
-    """Draw station names, section labels, and live capacity indicators."""
+    """Draw station names, section labels, and live capacity indicators.
+
+    When *eta_forecast* is provided (ETA reservations strategy on), each S
+    station additionally shows its predicted occupancy ~60s out ("→n.n").
+    """
 
     def label(
         text: str, cx: int, cy: int,
@@ -91,6 +102,23 @@ def draw_labels(
         pygame.draw.rect(surface, LABEL_BG, bgr)
         pygame.draw.rect(surface, OUTLINE_COLOR, bgr, 1)
         surface.blit(txt, r)
+
+        # Live ETA forecast: predicted occupancy ~60s out (ETA strategy on)
+        if eta_forecast and station_id in eta_forecast:
+            predicted, cap = eta_forecast[station_id]
+            prate = predicted / cap if cap else 0.0
+            if prate <= 0.50:
+                fcolor = (30, 140, 30)
+            elif prate <= 0.75:
+                fcolor = (200, 160, 0)
+            else:
+                fcolor = (200, 40, 40)
+            ftxt = font_sm.render(f"→{predicted:.1f}", True, fcolor)
+            fr = ftxt.get_rect(center=(cx, cy + TILE_SIZE))
+            fbg = fr.inflate(6, 4)
+            pygame.draw.rect(surface, (240, 244, 255), fbg)
+            pygame.draw.rect(surface, OUTLINE_COLOR, fbg, 1)
+            surface.blit(ftxt, fr)
 
     ts = TILE_SIZE
 
@@ -248,6 +276,19 @@ def draw_ui(
         y += 18
 
 
+def _draw_toggle_switch(
+    surface: pygame.Surface, x: int, y: int, on: bool,
+) -> pygame.Rect:
+    """Draw a small pill toggle switch; return its rect."""
+    w, h = 30, 14
+    rect = pygame.Rect(x, y, w, h)
+    bg = PANEL_GREEN if on else (80, 80, 95)
+    pygame.draw.rect(surface, bg, rect, border_radius=h // 2)
+    knob_x = x + w - h // 2 - 1 if on else x + h // 2 + 1
+    pygame.draw.circle(surface, (245, 245, 250), (knob_x, y + h // 2), h // 2 - 2)
+    return rect
+
+
 def draw_metrics_panel(
     surface: pygame.Surface,
     font_sm: pygame.font.Font,
@@ -260,11 +301,12 @@ def draw_metrics_panel(
     paused: bool,
     auto_spawn: bool,
     selected_agv: AGV | None = None,
-) -> None:
-    """Draw the 300px metrics panel on the right side of the window."""
+) -> dict[str, pygame.Rect]:
+    """Draw the 300px metrics panel; return clickable toggle hitboxes."""
     px = MAP_WIDTH
-    panel_rect = pygame.Rect(px, 0, PANEL_WIDTH, MAP_HEIGHT)
+    panel_rect = pygame.Rect(px, 0, PANEL_WIDTH, WINDOW_HEIGHT)
     pygame.draw.rect(surface, PANEL_BG, panel_rect)
+    toggle_rects: dict[str, pygame.Rect] = {}
 
     # Window is 640px tall since the aisle expansion — keep the panel compact
     y = 8
@@ -371,7 +413,25 @@ def draw_metrics_panel(
         row("Orders/hr", f"{stats['per_hour']:.1f}")
     y += section_gap
 
-    # 5. CONSTRAINT (what's holding back throughput)
+    # 5. STRATEGIES (clickable toggle switches)
+    header("STRATEGIES")
+    if dispatcher:
+        for info in STRATEGY_INFO:
+            on = getattr(dispatcher.strategies, info.attr)
+            color = PANEL_GREEN if on else PANEL_TEXT
+            txt = font_sm.render(f"  {info.label}", True, color)
+            surface.blit(txt, (px + 8, y))
+            switch_rect = _draw_toggle_switch(
+                surface, px + PANEL_WIDTH - 44, y - 1, on,
+            )
+            # Whole row is clickable, not just the pill
+            toggle_rects[info.attr] = pygame.Rect(
+                px + 8, y - 2, PANEL_WIDTH - 16, 16,
+            )
+            y += 17
+    y += section_gap
+
+    # 6. CONSTRAINT (what's holding back throughput)
     header("CONSTRAINT")
     if dispatcher and agvs and carts:
         (top_name, top_pct), all_scores = dispatcher.get_constraint(carts, agvs)
@@ -382,18 +442,18 @@ def draw_metrics_panel(
             row(name, f"{bar} {pct}%")
     y += section_gap
 
-    # 6. BOTTLENECK ALERTS
+    # 7. BOTTLENECK ALERTS
     header("ALERTS")
     if dispatcher:
         alerts = dispatcher.get_bottleneck_alerts(carts or [])
         if alerts:
-            for alert in alerts[:5]:
+            for alert in alerts[:3]:
                 row_raw(f"! {alert}", PANEL_RED)
         else:
             row_raw("No alerts", PANEL_GREEN)
     y += section_gap
 
-    # 6. SELECTED AGV
+    # 8. SELECTED AGV
     header("SELECTED AGV")
     if selected_agv:
         row("ID", str(selected_agv.agv_id))
@@ -409,12 +469,96 @@ def draw_metrics_panel(
         row_raw("None (TAB to select)", PANEL_TEXT)
     y += section_gap
 
-    # 7. Controls hint
-    controls_y = MAP_HEIGHT - 20
+    # 9. Controls hint
+    controls_y = WINDOW_HEIGHT - 20
     ctrl_txt = font_sm.render(
         "A:AGV C:Cart T:Auto Space:Pause Up/Dn:Speed", True, PANEL_SEPARATOR
     )
     surface.blit(ctrl_txt, (px + 10, controls_y))
+
+    return toggle_rects
+
+
+def draw_throughput_strip(
+    surface: pygame.Surface,
+    font_sm: pygame.font.Font,
+    dispatcher: Dispatcher | None,
+    sim_elapsed: float,
+    strategy_events: list[tuple[float, str]] | None = None,
+) -> None:
+    """Live orders/hr graph in the strip under the map.
+
+    Rolling ``THROUGHPUT_WINDOW`` rate over the whole run so far, with a
+    vertical marker each time a strategy toggle is flipped — the visual
+    proof of a toggle's throughput impact.
+    """
+    strip = pygame.Rect(0, MAP_HEIGHT, MAP_WIDTH, THROUGHPUT_STRIP_H)
+    pygame.draw.rect(surface, PANEL_BG, strip)
+    pygame.draw.line(surface, PANEL_SEPARATOR, (0, MAP_HEIGHT), (MAP_WIDTH, MAP_HEIGHT))
+
+    title = font_sm.render(
+        f"THROUGHPUT  (orders/hr, rolling {int(THROUGHPUT_WINDOW / 60)}min)",
+        True, PANEL_HEADER,
+    )
+    surface.blit(title, (10, MAP_HEIGHT + 4))
+
+    if dispatcher is None or sim_elapsed < 120.0:
+        txt = font_sm.render("collecting data…", True, PANEL_TEXT)
+        surface.blit(txt, (10, MAP_HEIGHT + 34))
+        return
+
+    times = dispatcher.order_completion_times  # chronological
+    margin_l, margin_r, margin_t, margin_b = 36, 70, 18, 12
+    gx = margin_l
+    gy = MAP_HEIGHT + margin_t
+    gw = MAP_WIDTH - margin_l - margin_r
+    gh = THROUGHPUT_STRIP_H - margin_t - margin_b
+
+    n_samples = min(240, max(2, int(sim_elapsed / 30)))
+    rates: list[float] = []
+    for i in range(n_samples):
+        t = sim_elapsed * (i + 1) / n_samples
+        lo = bisect.bisect_right(times, t - THROUGHPUT_WINDOW)
+        hi = bisect.bisect_right(times, t)
+        window = min(t, THROUGHPUT_WINDOW)
+        rates.append((hi - lo) / (window / 3600.0) if window > 0 else 0.0)
+
+    max_rate = max(max(rates) * 1.15, 20.0)
+
+    def to_xy(i: int, rate: float) -> tuple[int, int]:
+        x = gx + int(gw * (i + 1) / n_samples)
+        y_px = gy + gh - int(gh * rate / max_rate)
+        return (x, y_px)
+
+    # Axis + gridline
+    pygame.draw.line(surface, PANEL_SEPARATOR, (gx, gy), (gx, gy + gh))
+    pygame.draw.line(surface, PANEL_SEPARATOR, (gx, gy + gh), (gx + gw, gy + gh))
+    top_lbl = font_sm.render(f"{max_rate:.0f}", True, PANEL_TEXT)
+    surface.blit(top_lbl, (gx - top_lbl.get_width() - 4, gy - 4))
+    zero_lbl = font_sm.render("0", True, PANEL_TEXT)
+    surface.blit(zero_lbl, (gx - zero_lbl.get_width() - 4, gy + gh - 6))
+
+    # Strategy toggle markers
+    for t_ev, label in (strategy_events or []):
+        if t_ev <= 0 or t_ev > sim_elapsed:
+            continue
+        ex = gx + int(gw * t_ev / sim_elapsed)
+        pygame.draw.line(surface, PANEL_YELLOW, (ex, gy), (ex, gy + gh))
+        ev_txt = font_sm.render(label, True, PANEL_YELLOW)
+        surface.blit(ev_txt, (min(ex + 3, gx + gw - ev_txt.get_width()), gy - 14))
+
+    # Rate curve
+    points = [to_xy(i, r) for i, r in enumerate(rates)]
+    if len(points) >= 2:
+        pygame.draw.lines(surface, PANEL_GREEN, False, points, 2)
+
+    # Current rate, big, at right
+    current = rates[-1] if rates else 0.0
+    cur_txt = font_sm.render(f"now: {current:.1f}/hr", True, PANEL_GREEN)
+    surface.blit(cur_txt, (gx + gw + 6, gy + 2))
+    stats = dispatcher.get_throughput_stats(sim_elapsed)
+    avg_txt = font_sm.render(f"avg: {stats['per_hour']:.1f}/hr", True, PANEL_TEXT)
+    surface.blit(avg_txt, (gx + gw + 6, gy + 18))
 
 
 def render(
@@ -430,8 +574,10 @@ def render(
     sim_elapsed: float = 0.0,
     paused: bool = False,
     auto_spawn: bool = False,
-) -> None:
-    """Full frame render: background → tiles → labels → carts → AGVs → panel."""
+    strategy_events: list[tuple[float, str]] | None = None,
+    pickers=None,  # PickerManager | None — shadow-mode pickers (PRD §14.9)
+) -> dict[str, pygame.Rect]:
+    """Full frame render; returns clickable strategy-toggle hitboxes."""
     screen.fill(BG_COLOR)
 
     layer_order = [
@@ -465,7 +611,15 @@ def render(
                 overlay.fill(ov_color)
                 screen.blit(overlay, (pos[0] * TILE_SIZE, pos[1] * TILE_SIZE))
 
-    draw_labels(screen, font_sm, font_md, station_fill=station_fill)
+    eta_forecast = (
+        dispatcher.eta_forecast
+        if dispatcher and dispatcher.strategies.eta_reservations
+        else None
+    )
+    draw_labels(
+        screen, font_sm, font_md,
+        station_fill=station_fill, eta_forecast=eta_forecast,
+    )
 
     if carts:
         for cart in carts:
@@ -482,7 +636,17 @@ def render(
                 render_pos = cart.carried_by.get_render_pos()
                 draw_cart(screen, cart, font_sm, carried_render_pos=render_pos)
 
-    draw_metrics_panel(
+    if pickers is not None:
+        from .picker_view import draw_pickers, draw_picker_info
+        draw_pickers(screen, pickers)
+        draw_picker_info(screen, pickers, font_sm)
+
+    draw_throughput_strip(
+        screen, font_sm, dispatcher, sim_elapsed,
+        strategy_events=strategy_events,
+    )
+
+    return draw_metrics_panel(
         screen, font_sm, font_md, agvs or [], carts or [],
         dispatcher, sim_elapsed, time_scale, paused, auto_spawn,
         selected_agv=selected_agv,

@@ -7,11 +7,12 @@ TILE_SIZE = 16          # Each tile is 16x16 pixels (1 tile = 1 metre)
 GRID_COLS = 86          # 86 columns (x: 0-85). Cols 0-13 = west aisle bank,
                         # 14-73 = legacy layout shifted +14, 74-85 = east bank
 GRID_ROWS = 40          # 40 rows     (y: 0-39, top to bottom)
-MAP_WIDTH     = GRID_COLS * TILE_SIZE   # 1200 px (map area)
-MAP_HEIGHT    = GRID_ROWS * TILE_SIZE  # 800 px
+MAP_WIDTH     = GRID_COLS * TILE_SIZE   # 1376 px (map area)
+MAP_HEIGHT    = GRID_ROWS * TILE_SIZE   # 640 px
 PANEL_WIDTH   = 300
-WINDOW_WIDTH  = MAP_WIDTH + PANEL_WIDTH  # 1500 px total
-WINDOW_HEIGHT = MAP_HEIGHT               # 800 px
+THROUGHPUT_STRIP_H = 80  # live orders/hr graph strip under the map
+WINDOW_WIDTH  = MAP_WIDTH + PANEL_WIDTH        # 1676 px total
+WINDOW_HEIGHT = MAP_HEIGHT + THROUGHPUT_STRIP_H  # 720 px
 FPS = 30
 
 SPEED_STEPS = [0.5, 1.0, 2.0, 5.0, 10.0, 20.0, 50.0, 100.0]

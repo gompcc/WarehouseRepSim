@@ -83,6 +83,23 @@ for k, v in result.items():
 - Results are auto-appended to `results/sim_results.md` on completion.
 - Override any arg: `run_headless(num_agvs=8, num_carts=20, sim_duration=3600, tick_dt=0.1)`.
 - Entity placement matches the GUI exactly (same 10 AGV spots, same cart spawn cadence) so headless ↔ GUI results are directly comparable.
+- **Controlled experiments**: pass `seed=42` for a deterministic order stream (order N is identical across runs/policies — required for fair A/B), and `strategies={'eta_reservations': True, 'global_assignment': True, 'order_sequencing': True}` (any subset) to enable dispatch strategy modules (`agv_simulation/strategies/`). All off = exact baseline. GUI has the same toggles as clickable switches (seeded 42 by default).
+
+### Strategy A/B comparison
+```bash
+./venv/bin/python experiments/run_strategy_comparison.py            # 3 configs x 8 combos x 3 seeds, 8h
+./venv/bin/python experiments/run_strategy_comparison.py --quick    # 2h sims
+```
+Appends per-config tables to `results/strategy_comparison.md`.
+
+### Per-strategy fleet optimization
+```bash
+./venv/bin/python experiments/run_fleet_optimization.py             # 2-stage: coarse fleet grid + 3-seed confirm
+```
+Finds each strategy combo's own optimal (AGVs, carts) — policies change congestion
+behavior, so their throughput-maximizing fleets differ. Appends to
+`results/fleet_optimization.md`. Sweep runs use `run_headless(..., export=False)`
+so they don't spam `results/sim_results.md`.
 
 ### Parameter sweep
 ```bash

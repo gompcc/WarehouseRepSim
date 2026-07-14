@@ -12,6 +12,10 @@ from .constants import (
     MAX_CONCURRENT_DISPATCHES,
 )
 from .models import Job, Order, STATIONS
+from .strategies import (
+    StrategyConfig, DistanceMap, ETAReservations,
+    GlobalAssignment, OrderSequencing,
+)
 
 if TYPE_CHECKING:
     from .agv import AGV
@@ -23,7 +27,11 @@ logger = logging.getLogger(__name__)
 class Dispatcher:
     """Orchestrates the autonomous cart lifecycle through the warehouse."""
 
-    def __init__(self, tiles: dict[tuple[int, int], Tile]) -> None:
+    def __init__(
+        self,
+        tiles: dict[tuple[int, int], Tile],
+        strategies: StrategyConfig | None = None,
+    ) -> None:
         self._station_tiles: dict[tuple[str | None, TileType], list[tuple[int, int]]] = {}
         for (x, y), tile in tiles.items():
             key = (tile.station_id, tile.tile_type)
@@ -37,6 +45,63 @@ class Dispatcher:
         self.cart_start_times: dict[int, float] = {}
         self.cycle_times: list[float] = []
         self._sim_elapsed: float = 0.0
+
+        # Strategy modules (toggleable at runtime; None until first update
+        # because the DistanceMap needs the routing graph)
+        self.strategies = strategies or StrategyConfig()
+        self.eta_forecast: dict[str, tuple[float, int]] = {}
+        self._dist_map: DistanceMap | None = None
+        self._eta: ETAReservations | None = None
+        self._sequencing: OrderSequencing | None = None
+        self._global_assign: GlobalAssignment | None = None
+
+    def _ensure_strategies(
+        self, graph: dict[tuple[int, int], set[tuple[int, int]]],
+    ) -> None:
+        """Build strategy modules on first tick (they need the graph)."""
+        if self._dist_map is None:
+            self._dist_map = DistanceMap(graph, self._station_tiles)
+            self._eta = ETAReservations(self._dist_map)
+            self._sequencing = OrderSequencing(self._dist_map)
+            self._global_assign = GlobalAssignment()
+
+    def _choose_next_station(
+        self,
+        cart: Cart,
+        carts: list[Cart],
+        agvs: list[AGV],
+    ) -> int | None:
+        """Pick the next station for *cart* (single seam for all strategies).
+
+        With all toggles off this reproduces baseline behavior exactly:
+        greedy fill+distance scoring over all remaining stations, falling
+        back to the lowest-numbered remaining station when everything is
+        full. Returns ``None`` only when no stations remain.
+        """
+        if cart.order is None:
+            return None
+        remaining = [
+            s for s in cart.order.stations_to_visit
+            if s not in cart.order.completed_stations
+        ]
+        if not remaining:
+            return None
+        cfg = self.strategies
+        candidates = remaining
+        if cfg.order_sequencing and self._sequencing:
+            candidates = self._sequencing.order_candidates(cart, remaining)
+        if cfg.eta_reservations and self._eta:
+            ns = self._eta.choose_station(self, cart, candidates, carts, agvs)
+        else:
+            ns = self._pick_best_station(candidates, cart.pos, carts)
+        if ns is None:
+            # All candidates full — deterministic fallback (job creation may
+            # still buffer the cart if no tile is free).
+            if cfg.order_sequencing and self._sequencing:
+                ns = candidates[0]
+            else:
+                ns = cart.order.next_station()
+        return ns
 
     def _occupied_tiles(self, carts: list[Cart]) -> set[tuple[int, int]]:
         """Return tiles physically occupied by stationary carts (no job reservations)."""
@@ -189,13 +254,7 @@ class Dispatcher:
                         cart.order.picks,
                         ["S" + str(s) for s in cart.order.stations_to_visit],
                     )
-                remaining = [
-                    s for s in cart.order.stations_to_visit
-                    if s not in cart.order.completed_stations
-                ]
-                ns = self._pick_best_station(remaining, cart.pos, carts)
-                if ns is None:
-                    ns = cart.order.next_station()
+                ns = self._choose_next_station(cart, carts, agvs)
                 if ns is not None:
                     sid = f"S{ns}"
                     target = self._find_tile(sid, TileType.PICK_STATION, carts)
@@ -205,13 +264,7 @@ class Dispatcher:
 
             elif cart.state == CartState.PICKING and cart.process_timer <= 0:
                 if cart.order:
-                    remaining = [
-                        s for s in cart.order.stations_to_visit
-                        if s not in cart.order.completed_stations
-                    ]
-                    ns = self._pick_best_station(remaining, cart.pos, carts)
-                    if ns is None:
-                        ns = cart.order.next_station()
+                    ns = self._choose_next_station(cart, carts, agvs)
                     if ns is not None:
                         sid = f"S{ns}"
                         target = self._find_tile(sid, TileType.PICK_STATION, carts)
@@ -287,20 +340,13 @@ class Dispatcher:
                         job = Job(JobType.RETURN_TO_BOX_DEPOT, cart, target)
                         self.pending_jobs.append(job)
                 else:
-                    remaining = [
-                        s for s in cart.order.stations_to_visit
-                        if s not in cart.order.completed_stations
-                    ]
-                    if remaining:
-                        ns = self._pick_best_station(remaining, cart.pos, carts)
-                        if ns is None:
-                            ns = cart.order.next_station()
-                        if ns is not None:
-                            sid = f"S{ns}"
-                            target = self._find_tile(sid, TileType.PICK_STATION, carts)
-                            if target:
-                                job = Job(JobType.MOVE_TO_PICK, cart, target, station_id=sid)
-                                self.pending_jobs.append(job)
+                    ns = self._choose_next_station(cart, carts, agvs)
+                    if ns is not None:
+                        sid = f"S{ns}"
+                        target = self._find_tile(sid, TileType.PICK_STATION, carts)
+                        if target:
+                            job = Job(JobType.MOVE_TO_PICK, cart, target, station_id=sid)
+                            self.pending_jobs.append(job)
                     elif cart.order.all_picked():
                         # Only dispatch if pack-off has physical capacity
                         at_packoff = sum(
@@ -340,6 +386,9 @@ class Dispatcher:
         blocked_count = sum(1 for a in agvs if a.is_blocked)
         slots = MAX_CONCURRENT_DISPATCHES - len(self.active_jobs) - blocked_count // 3
         if slots <= 0:
+            return
+        if self.strategies.global_assignment and self._global_assign:
+            self._global_assign.assign(self, agvs, graph, tiles, slots)
             return
         free_agvs = [
             a for a in agvs
@@ -783,7 +832,12 @@ class Dispatcher:
     ) -> None:
         """Main dispatcher tick — called each frame after AGV updates."""
         self._sim_elapsed = sim_elapsed
+        self._ensure_strategies(graph)
         self._station_fill_cache = self.get_station_fill(carts)
+        if self.strategies.eta_reservations and self._eta:
+            self.eta_forecast = self._eta.forecast(self, carts)
+        else:
+            self.eta_forecast = {}
         self._cancel_stuck_jobs(agvs, carts, graph, tiles)
         self._create_jobs(carts, agvs, graph, tiles)
         self._assign_jobs(agvs, graph, tiles)
@@ -905,6 +959,8 @@ class Dispatcher:
         import os
         from datetime import datetime
 
+        from . import models as _models
+
         os.makedirs("results", exist_ok=True)
         filepath = "results/sim_results.md"
 
@@ -931,6 +987,8 @@ class Dispatcher:
             f" | **Orders**: {stats['completed']:.0f}"
             f" | **Orders/hr**: {stats['per_hour']:.1f}"
             f" | **Avg cycle**: {avg_m}m {avg_s}s\n",
+            f"**Strategies**: {'+'.join(self.strategies.active_names()) or 'baseline'}"
+            f" | Seed: {_models._order_seed}\n",
             f"**Constraint**: {top_constraint[0]} ({top_constraint[1]}%)\n\n",
             "| Resource | Pressure |\n",
             "|----------|----------|\n",

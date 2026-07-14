@@ -12,10 +12,11 @@ import logging
 import time as _time
 
 from .enums import AGVState
-from .models import Cart, Order, Job
+from .models import Cart, Order, Job, set_order_seed
 from .agv import AGV
 from .environment import Environment
 from .dispatcher import Dispatcher
+from .strategies import StrategyConfig
 
 logger = logging.getLogger(__name__)
 
@@ -36,6 +37,9 @@ def run_headless(
     log_level: str = "INFO",
     log_file: str | None = None,
     event_jsonl: str | None = None,
+    seed: int | None = None,
+    strategies: StrategyConfig | dict | None = None,
+    export: bool = True,
 ) -> dict:
     """Run the simulation without pygame, using a fixed timestep.
 
@@ -59,17 +63,22 @@ def run_headless(
     )
 
     _reset_id_counters()
+    set_order_seed(seed)
+    if isinstance(strategies, dict):
+        strategies = StrategyConfig(**strategies)
     wall_start = _time.monotonic()
 
     env = Environment(event_jsonl=event_jsonl)
     env.place_agvs(num_agvs)
     env.preload_remaining = num_carts
-    dispatcher = Dispatcher(env.tiles)
+    dispatcher = Dispatcher(env.tiles, strategies=strategies)
 
     total_ticks: int = 0
 
-    logger.info("Headless: %d AGVs, spawning %d carts over %ds sim-time",
-                num_agvs, num_carts, int(sim_duration))
+    logger.info("Headless: %d AGVs, spawning %d carts over %ds sim-time"
+                " (seed=%s, strategies=%s)",
+                num_agvs, num_carts, int(sim_duration), seed,
+                dispatcher.strategies.active_names() or "baseline")
 
     # Utilization tracking
     idle_ticks: dict[int, int] = {agv.agv_id: 0 for agv in env.agvs}
@@ -95,8 +104,10 @@ def run_headless(
     wall_elapsed = _time.monotonic() - wall_start
     env.events.close()
 
-    # Export results (same file as GUI)
-    dispatcher.export_results(env.sim_elapsed, env.agvs, env.carts)
+    # Export results (same file as GUI); sweeps pass export=False to keep
+    # results/sim_results.md from drowning in hundreds of grid-search runs
+    if export:
+        dispatcher.export_results(env.sim_elapsed, env.agvs, env.carts)
 
     completed = dispatcher.completed_orders
     hours = env.sim_elapsed / 3600.0
@@ -127,6 +138,8 @@ def run_headless(
     return {
         "num_agvs": num_agvs,
         "num_carts": num_carts,
+        "seed": seed,
+        "strategies": dispatcher.strategies.active_names(),
         "completed_orders": completed,
         "orders_per_hour": orders_per_hour,
         "avg_cycle_time": avg_cycle,
