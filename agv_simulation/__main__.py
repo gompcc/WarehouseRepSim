@@ -16,13 +16,13 @@ from .enums import AGVState, CartState, TileType
 from .constants import (
     TILE_SIZE, GRID_COLS, GRID_ROWS,
     WINDOW_WIDTH, WINDOW_HEIGHT, MAP_WIDTH,
-    FPS, SPEED_STEPS, AUTO_SPAWN_INTERVAL,
-    AGV_SPAWN_TILE, CART_SPAWN_TILES, BOX_DEPOT_TIME,
-    PRELOAD_CART_COUNT, PRELOAD_SPAWN_INTERVAL,
+    FPS, SPEED_STEPS,
+    AGV_SPAWN_TILE, BOX_DEPOT_TIME,
+    PRELOAD_CART_COUNT, PRELOAD_AGV_COUNT,
 )
-from .models import Cart
 from .agv import AGV
-from .map_builder import build_map, build_graph, verify_graph
+from .map_builder import verify_graph
+from .environment import Environment
 from .dispatcher import Dispatcher
 from .renderer import render
 
@@ -44,8 +44,9 @@ def main() -> None:
     font_sm = pygame.font.SysFont("Arial", 11)
     font_md = pygame.font.SysFont("Arial", 14, bold=True)
 
-    tiles = build_map()
-    graph = build_graph(tiles)
+    env = Environment()
+    tiles = env.tiles
+    graph = env.graph
 
     logger.info("Map built: %d tiles", len(tiles))
     logger.info("Window:    %dx%d px", WINDOW_WIDTH, WINDOW_HEIGHT)
@@ -58,30 +59,19 @@ def main() -> None:
 
     dispatcher = Dispatcher(tiles)
 
-    agvs: list[AGV] = []
-    carts: list[Cart] = []
+    agvs = env.agvs
+    carts = env.carts
     selected_agv: AGV | None = None
     time_scale: float = SPEED_STEPS[-1]
     speed_index: int = len(SPEED_STEPS) - 1
     paused: bool = False
-    auto_spawn: bool = False
-    auto_spawn_timer: float = 0.0
-    sim_elapsed: float = 0.0
 
-    # Pre-load 10 AGVs distributed near stations across the map
-    _agv_spots = [
-        (8, 9), (10, 16), (8, 22), (10, 28), (8, 34),
-        (37, 9), (39, 15), (37, 21), (39, 27), (37, 33),
-    ]
-    for pos in _agv_spots:
-        if pos in tiles:
-            agvs.append(AGV(pos))
+    # Pre-load AGVs and auto-spawn carts one at a time (every 5 sim-seconds)
+    env.place_agvs(PRELOAD_AGV_COUNT)
+    env.preload_remaining = PRELOAD_CART_COUNT
     if agvs:
         selected_agv = agvs[0]
-    # Auto-spawn carts one at a time (25 total, every 5 sim-seconds)
-    auto_spawn = True
-    auto_spawn_remaining = PRELOAD_CART_COUNT
-    logger.info("Pre-loaded %d AGVs, auto-spawning %d carts", len(agvs), auto_spawn_remaining)
+    logger.info("Pre-loaded %d AGVs, auto-spawning %d carts", len(agvs), PRELOAD_CART_COUNT)
 
     running = True
     while running:
@@ -110,9 +100,8 @@ def main() -> None:
                     logger.info("PAUSED" if paused else "RESUMED")
 
                 elif event.key == pygame.K_t:
-                    auto_spawn = not auto_spawn
-                    auto_spawn_timer = 0.0
-                    logger.info("Auto-spawn: %s", "ON" if auto_spawn else "OFF")
+                    env.spawn_enabled = not env.spawn_enabled
+                    logger.info("Auto-spawn: %s", "ON" if env.spawn_enabled else "OFF")
 
                 elif event.key == pygame.K_a:
                     if any(a.pos == AGV_SPAWN_TILE for a in agvs):
@@ -124,16 +113,7 @@ def main() -> None:
                         logger.info("Spawned AGV %d at %s", new_agv.agv_id, AGV_SPAWN_TILE)
 
                 elif event.key == pygame.K_c:
-                    occupied = {c.pos for c in carts if c.carried_by is None}
-                    spawned = False
-                    for spawn_pos in CART_SPAWN_TILES:
-                        if spawn_pos not in occupied:
-                            new_cart = Cart(spawn_pos)
-                            carts.append(new_cart)
-                            logger.info("Spawned Cart C%d at %s", new_cart.cart_id, spawn_pos)
-                            spawned = True
-                            break
-                    if not spawned:
+                    if env.spawn_cart() is None:
                         logger.info("All cart spawn tiles occupied!")
 
                 elif event.key == pygame.K_p:
@@ -324,43 +304,21 @@ def main() -> None:
 
         # Compute sim delta (zero when paused)
         sim_dt = dt * time_scale if not paused else 0.0
-        sim_elapsed += sim_dt
-
-        # Auto-spawn carts
-        if auto_spawn and not paused:
-            interval = PRELOAD_SPAWN_INTERVAL if auto_spawn_remaining > 0 else AUTO_SPAWN_INTERVAL
-            auto_spawn_timer += sim_dt
-            if auto_spawn_timer >= interval:
-                auto_spawn_timer -= interval
-                occupied = {c.pos for c in carts if c.carried_by is None}
-                for spawn_pos in CART_SPAWN_TILES:
-                    if spawn_pos not in occupied:
-                        new_cart = Cart(spawn_pos)
-                        carts.append(new_cart)
-                        logger.info("[Auto] Spawned Cart C%d at %s", new_cart.cart_id, spawn_pos)
-                        if auto_spawn_remaining > 0:
-                            auto_spawn_remaining -= 1
-                            if auto_spawn_remaining == 0:
-                                auto_spawn = False
-                                logger.info("[Auto] All pre-load carts spawned — auto-spawn OFF")
-                        break
 
         if not paused:
-            for agv in agvs:
-                agv.update(sim_dt, agvs, carts, graph, tiles)
-            for cart in carts:
-                cart.update(sim_dt)
-            dispatcher.update(carts, agvs, graph, tiles, sim_elapsed=sim_elapsed)
+            env.step(sim_dt)
+            dispatcher.update(carts, agvs, graph, tiles, sim_elapsed=env.sim_elapsed)
+            env.audit(sim_dt)
 
         render(
             screen, tiles, font_sm, font_md, agvs, selected_agv, time_scale,
-            carts, dispatcher=dispatcher, sim_elapsed=sim_elapsed,
-            paused=paused, auto_spawn=auto_spawn,
+            carts, dispatcher=dispatcher, sim_elapsed=env.sim_elapsed,
+            paused=paused, auto_spawn=env.spawn_enabled,
         )
         pygame.display.flip()
 
-    if sim_elapsed > 0:
-        dispatcher.export_results(sim_elapsed, agvs, carts)
+    if env.sim_elapsed > 0:
+        dispatcher.export_results(env.sim_elapsed, agvs, carts)
 
     pygame.quit()
     sys.exit()

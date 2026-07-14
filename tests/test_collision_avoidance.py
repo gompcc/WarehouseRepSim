@@ -462,12 +462,13 @@ def test_find_alt_tile_for_pick_station():
     assert result == s1_tiles[4]  # only free tile
 
 
-def test_retarget_cap_drops_cart_after_3():
-    """After 3 retargets, AGV should drop the cart and free itself."""
+def test_retarget_cap_never_drops_cart_on_highway():
+    """Even past the retarget cap, an AGV on a highway tile must keep its
+    cart — an abandoned cart in the single-lane loop gridlocks everything."""
     tiles = build_map()
     graph = build_graph(tiles)
     dispatcher = Dispatcher(tiles)
-    cart = Cart((9, 20))
+    cart = Cart((9, 20))  # col 9 = left highway
     cart.state = CartState.IN_TRANSIT
     agv = AGV((9, 20))
     agv.carrying_cart = cart
@@ -483,11 +484,9 @@ def test_retarget_cap_drops_cart_after_3():
     agv.current_job = job
     dispatcher.active_jobs.append(job)
     dispatcher._cancel_stuck_jobs([agv], [cart], graph, tiles)
-    # AGV should have dropped the cart
-    assert agv.state == AGVState.IDLE
-    assert agv.carrying_cart is None
-    assert cart.state == CartState.WAITING_FOR_STATION
-    assert cart.carried_by is None
+    # Cart must still be on the AGV (retargeted or waiting, but not dumped)
+    assert cart.carried_by is agv
+    assert agv.carrying_cart is cart
 
 
 def test_packoff_capacity_check_uses_physical_occupancy():
@@ -513,7 +512,7 @@ def test_packoff_capacity_check_uses_physical_occupancy():
     waiting.order.completed_stations = []
     waiting.order.picks = []
     carts.append(waiting)
-    dispatcher._create_jobs(carts, graph, tiles)
+    dispatcher._create_jobs(carts, [], graph, tiles)
     # No MOVE_TO_PACKOFF job should be created (pack-off physically full)
     packoff_jobs = [j for j in dispatcher.pending_jobs if j.job_type == JobType.MOVE_TO_PACKOFF]
     assert len(packoff_jobs) == 0
@@ -533,3 +532,61 @@ def test_find_alt_tile_returns_none_when_full():
     job = Job(JobType.MOVE_TO_PICK, carts[0], s1_tiles[0], station_id="S1")
     result = dispatcher._find_alt_tile(job, carts)
     assert result is None
+
+
+def test_orphaned_waiting_cart_gets_rerouted_to_box_depot():
+    """A WAITING_FOR_STATION cart with no order (buffered before reaching
+    Box Depot) must be re-routed to Box Depot, not deadlock forever."""
+    tiles = build_map()
+    graph = build_graph(tiles)
+    dispatcher = Dispatcher(tiles)
+    orphan = Cart((8, 9))
+    orphan.state = CartState.WAITING_FOR_STATION
+    orphan.order = None
+    dispatcher._create_jobs([orphan], [], graph, tiles)
+    jobs = [j for j in dispatcher.pending_jobs if j.cart is orphan]
+    assert len(jobs) == 1
+    assert jobs[0].job_type == JobType.PICKUP_TO_BOX_DEPOT
+
+
+def test_packed_waiting_cart_returns_home_not_back_to_packoff():
+    """A cart dropped mid-return (order already packed) must go to Box Depot,
+    never back to Pack-off for a second processing pass."""
+    tiles = build_map()
+    graph = build_graph(tiles)
+    dispatcher = Dispatcher(tiles)
+    cart = Cart((8, 9))
+    cart.state = CartState.WAITING_FOR_STATION
+    cart.order = Order()
+    cart.order.stations_to_visit = [1]
+    cart.order.completed_stations = [1]
+    cart.order.packed = True
+    dispatcher._create_jobs([cart], [], graph, tiles)
+    jobs = [j for j in dispatcher.pending_jobs if j.cart is cart]
+    assert len(jobs) == 1
+    assert jobs[0].job_type == JobType.RETURN_TO_BOX_DEPOT
+
+
+def test_giveup_drop_releases_cart_in_place():
+    """Giving up on a stuck carrying AGV must release the cart at the AGV's
+    physical position — never teleport it to a distant tile."""
+    tiles = build_map()
+    graph = build_graph(tiles)
+    dispatcher = Dispatcher(tiles)
+    agv = AGV((10, 24))  # parking tile — highway drops are forbidden
+    cart = Cart((10, 24))
+    cart.carried_by = agv
+    cart.state = CartState.IN_TRANSIT_TO_PICK
+    agv.carrying_cart = cart
+    agv.state = AGVState.MOVING_TO_DROPOFF
+    agv.is_blocked = True
+    agv.blocked_timer = 100.0
+    job = Job(JobType.MOVE_TO_PICK, cart, (8, 12), station_id="S1")
+    job.retarget_count = 3
+    job.assigned_agv = agv
+    agv.current_job = job
+    dispatcher.active_jobs.append(job)
+    dispatcher._cancel_stuck_jobs([agv], [cart], graph, tiles)
+    assert cart.pos == (10, 24)
+    assert cart.carried_by is None
+    assert agv.carrying_cart is None

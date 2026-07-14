@@ -1,7 +1,9 @@
 """Headless (no-GUI) simulation runner.
 
-Uses identical entity placement and cart spawning as the GUI mode
-so that results are directly comparable.
+Drives the shared :class:`Environment` with a fixed timestep, so entity
+placement and cart spawning are identical to the GUI and results are
+directly comparable. The Dispatcher (policy) is ticked after each
+environment (physics) step, then the environment audits consistency.
 """
 
 from __future__ import annotations
@@ -9,20 +11,13 @@ from __future__ import annotations
 import logging
 import time as _time
 
-from .enums import AGVState, TileType
+from .enums import AGVState
 from .models import Cart, Order, Job
 from .agv import AGV
-from .map_builder import build_map, build_graph
+from .environment import Environment
 from .dispatcher import Dispatcher
-from .constants import CART_SPAWN_TILES, PRELOAD_SPAWN_INTERVAL
 
 logger = logging.getLogger(__name__)
-
-# Same AGV parking spots as GUI (__main__.py)
-_AGV_SPOTS = [
-    (8, 9), (10, 16), (8, 22), (10, 28), (8, 34),
-    (37, 9), (39, 15), (37, 21), (39, 27), (37, 33),
-]
 
 
 def _reset_id_counters() -> None:
@@ -40,6 +35,7 @@ def run_headless(
     tick_dt: float = 0.1,
     log_level: str = "INFO",
     log_file: str | None = None,
+    event_jsonl: str | None = None,
 ) -> dict:
     """Run the simulation without pygame, using a fixed timestep.
 
@@ -48,7 +44,8 @@ def run_headless(
     - Carts spawned one at a time at cart spawn tile, every 5 sim-seconds
     - Spawning stops after ``num_carts`` carts (no continuous spawning)
 
-    Returns a dict of performance metrics.
+    Returns a dict of performance metrics, including the environment's
+    ``stuck_report`` (stuck carts, buffer thrashing, physics violations).
     """
     # Configure logging
     handlers: list[logging.Handler] = [logging.StreamHandler()]
@@ -64,83 +61,45 @@ def run_headless(
     _reset_id_counters()
     wall_start = _time.monotonic()
 
-    tiles = build_map()
-    graph = build_graph(tiles)
-    dispatcher = Dispatcher(tiles)
+    env = Environment(event_jsonl=event_jsonl)
+    env.place_agvs(num_agvs)
+    env.preload_remaining = num_carts
+    dispatcher = Dispatcher(env.tiles)
 
-    sim_elapsed: float = 0.0
     total_ticks: int = 0
-
-    # Place AGVs at fixed spots (matching GUI)
-    agvs: list[AGV] = []
-    extra_parking = [
-        pos for pos in graph
-        if tiles[pos].tile_type in (TileType.PARKING, TileType.AGV_SPAWN)
-        and tiles[pos].station_id is None
-        and pos not in set(_AGV_SPOTS)
-    ]
-    for i in range(num_agvs):
-        if i < len(_AGV_SPOTS):
-            agvs.append(AGV(_AGV_SPOTS[i]))
-        elif extra_parking:
-            agvs.append(AGV(extra_parking.pop(0)))
-        else:
-            logger.warning("No parking spot for AGV %d", i + 1)
-
-    # Carts spawn one at a time during the sim loop (matching GUI)
-    carts: list[Cart] = []
-    carts_remaining = num_carts
-    spawn_timer: float = 0.0
 
     logger.info("Headless: %d AGVs, spawning %d carts over %ds sim-time",
                 num_agvs, num_carts, int(sim_duration))
 
     # Utilization tracking
-    idle_ticks: dict[int, int] = {agv.agv_id: 0 for agv in agvs}
-    blocked_ticks: dict[int, int] = {agv.agv_id: 0 for agv in agvs}
-    total_tracked: dict[int, int] = {agv.agv_id: 0 for agv in agvs}
+    idle_ticks: dict[int, int] = {agv.agv_id: 0 for agv in env.agvs}
+    blocked_ticks: dict[int, int] = {agv.agv_id: 0 for agv in env.agvs}
+    total_tracked: dict[int, int] = {agv.agv_id: 0 for agv in env.agvs}
 
-    while sim_elapsed < sim_duration:
-        # Cart auto-spawn (matches GUI exactly, stops at num_carts)
-        if carts_remaining > 0:
-            spawn_timer += tick_dt
-            if spawn_timer >= PRELOAD_SPAWN_INTERVAL:
-                spawn_timer -= PRELOAD_SPAWN_INTERVAL
-                occupied = {c.pos for c in carts if c.carried_by is None}
-                for spawn_pos in CART_SPAWN_TILES:
-                    if spawn_pos not in occupied:
-                        new_cart = Cart(spawn_pos)
-                        carts.append(new_cart)
-                        carts_remaining -= 1
-                        logger.info("[Auto] Spawned Cart C%d at %s (%d remaining)",
-                                    new_cart.cart_id, spawn_pos, carts_remaining)
-                        break
+    while env.sim_elapsed < sim_duration:
+        env.step(tick_dt)
+        dispatcher.update(
+            env.carts, env.agvs, env.graph, env.tiles, sim_elapsed=env.sim_elapsed,
+        )
+        env.audit(tick_dt)
 
-        for agv in agvs:
-            agv.update(tick_dt, agvs, carts, graph, tiles)
-
-        for cart in carts:
-            cart.update(tick_dt)
-
-        dispatcher.update(carts, agvs, graph, tiles, sim_elapsed=sim_elapsed)
-
-        for agv in agvs:
+        for agv in env.agvs:
             total_tracked[agv.agv_id] += 1
             if agv.state == AGVState.IDLE:
                 idle_ticks[agv.agv_id] += 1
             if agv.is_blocked:
                 blocked_ticks[agv.agv_id] += 1
 
-        sim_elapsed += tick_dt
         total_ticks += 1
 
     wall_elapsed = _time.monotonic() - wall_start
+    env.events.close()
 
     # Export results (same file as GUI)
-    dispatcher.export_results(sim_elapsed, agvs, carts)
+    dispatcher.export_results(env.sim_elapsed, env.agvs, env.carts)
 
     completed = dispatcher.completed_orders
-    hours = sim_elapsed / 3600.0
+    hours = env.sim_elapsed / 3600.0
     orders_per_hour = completed / hours if hours > 0 else 0.0
 
     cycle_times = list(dispatcher.cycle_times)
@@ -153,12 +112,17 @@ def run_headless(
     agv_blocked_fraction = total_blocked / total_t if total_t > 0 else 0.0
 
     station_fill: dict = {}
-    fill_data = dispatcher.get_station_fill(carts)
+    fill_data = dispatcher.get_station_fill(env.carts)
     for sid, (cur, cap, rate) in fill_data.items():
         station_fill[sid] = {"current": cur, "capacity": cap, "fill_rate": rate}
 
+    stuck_report = env.stuck_report()
+
     logger.info("Headless complete: %d orders in %.0fs sim (%.1fs wall)",
-                completed, sim_elapsed, wall_elapsed)
+                completed, env.sim_elapsed, wall_elapsed)
+    logger.info("Audit: %d stuck events, %d teleports, top thrashers: %s",
+                stuck_report["stuck_events"], stuck_report["teleport_events"],
+                stuck_report["times_buffered"][:5])
 
     return {
         "num_agvs": num_agvs,
@@ -170,7 +134,8 @@ def run_headless(
         "agv_utilization": agv_utilization,
         "agv_blocked_fraction": agv_blocked_fraction,
         "station_fill": station_fill,
-        "sim_duration": sim_elapsed,
+        "stuck_report": stuck_report,
+        "sim_duration": env.sim_elapsed,
         "wall_clock_seconds": wall_elapsed,
         "total_ticks": total_ticks,
     }

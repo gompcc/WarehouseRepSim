@@ -65,6 +65,7 @@ class Order:
         self.picks: list[int] = [random.randint(1, 9) for _ in range(length)]
         self.stations_to_visit: list[int] = sorted(set(self.picks))
         self.completed_stations: list[int] = []
+        self.packed: bool = False  # True once the cart has reached Pack-off
 
     def items_at_station(self, station_num: int) -> int:
         """Return the number of items to pick at *station_num*."""

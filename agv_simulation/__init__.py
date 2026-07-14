@@ -11,6 +11,7 @@ from .pathfinding import astar
 from .map_builder import build_map, build_graph, verify_graph
 from .dispatcher import Dispatcher
 from .agv import AGV
+from .environment import Environment, EventLog
 from .headless import run_headless
 
 __all__ = [
@@ -20,5 +21,6 @@ __all__ = [
     "build_map", "build_graph", "verify_graph",
     "Dispatcher",
     "AGV",
+    "Environment", "EventLog",
     "run_headless",
 ]

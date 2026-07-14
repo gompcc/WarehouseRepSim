@@ -75,6 +75,15 @@ PRELOAD_AGV_COUNT      = 10
 PRELOAD_CART_COUNT     = 25
 PRELOAD_SPAWN_INTERVAL = 5.0   # sim-seconds between pre-load cart spawns
 
+# Fixed AGV parking spots shared by GUI and headless (near stations)
+DEFAULT_AGV_SPOTS = [
+    (8, 9), (10, 16), (8, 22), (10, 28), (8, 34),
+    (37, 9), (39, 15), (37, 21), (39, 27), (37, 33),
+]
+
+# Environment audit
+STUCK_WARN_SECONDS = 300.0  # no cart progress for this long → stuck event
+
 # ============================================================
 # KEY LAYOUT CONSTANTS  (column / row positions)
 # ============================================================
