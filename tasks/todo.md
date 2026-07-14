@@ -1,4 +1,18 @@
-# ⚡ SESSION HANDOFF — read this first (2026-07-14, end of picker/slotting session)
+# ⚡ SESSION HANDOFF — read this first (2026-07-14, updated evening session)
+
+## ⚡ Evening update (through commit 2e7231f)
+Model changes (all user-set): orders N(20,9) lines in SKU space (F1
+fairness implemented), BOX_DEPOT_TIME 60 s, **side-constrained zoning**
+(pickers can't cross the highway; west S1/S3, central S2/S4/S6/S8, east
+S5/S7/S9). Terminology canonical: line = SKU on an order, line == pick.
+Headline (8h seed 42, 10A/25C): sequential 11.7 o/hr vs velocity 32.3
+(+176%) — walk AND zone balance (S3 99% busy vs S5 2% under sequential).
+Dispatch (ETA/HUN) neutral until layout balanced. Stakeholder 2-pager:
+`results/2pager_2026-07-14.md`. GUI: 13"-fit (1332×560), zone-colored
+stations (no legend), toggles auto-retarget fleet (OPTIMAL_FLEET
+provisional; screen results → results/runs/fleet_screen_2026-07-14.json).
+Old pre-2026-07-14 results NOT comparable. Cleanup deferred by user.
+Next: picker strategies (static vs dynamic-within-side), sweep, matrix.
 
 Everything below this block is historical context from two parallel
 workstreams (dispatch strategies + picker/aisle model), both now MERGED and

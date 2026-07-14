@@ -22,13 +22,15 @@ SPEED_STEPS = [0.5, 1.0, 2.0, 5.0, 10.0, 20.0, 50.0, 100.0]
 # Optimal fleet (AGVs, carts) per dispatch-strategy combo, keyed by
 # (eta_reservations, global_assignment). Flipping a GUI toggle retargets
 # the live fleet to the new combo's optimum via Environment.retarget_fleet.
-# PROVISIONAL values pending the per-combo fleet screen under the current
-# demand model (experiments/run_fleet_optimization.py refresh).
+# From the 2026-07-14 fleet screen (2h sims, seed 42, sequential slotting;
+# results/runs/fleet_screen_2026-07-14.json). Deltas across fleets are
+# small on the station-bound sequential layout — refine with multi-seed
+# runs per slotting when the experiment matrix runs.
 OPTIMAL_FLEET: dict[tuple[bool, bool], tuple[int, int]] = {
-    (False, False): (10, 25),
-    (True, False): (10, 25),
-    (False, True): (10, 25),
-    (True, True): (10, 25),
+    (False, False): (8, 15),
+    (True, False): (12, 20),
+    (False, True): (12, 25),
+    (True, True): (8, 15),
 }
 AUTO_SPAWN_INTERVAL = 30.0   # sim-seconds between auto-spawned carts
 
