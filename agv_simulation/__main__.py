@@ -27,7 +27,8 @@ from .map_builder import verify_graph
 from .environment import Environment
 from .dispatcher import Dispatcher
 from .headless import _reset_id_counters
-from .models import set_order_seed
+from .models import set_order_seed, set_order_book
+from .orderbook import ensure_order_book
 from .renderer import render
 from .strategies import STRATEGY_INFO
 
@@ -52,6 +53,9 @@ def _build_world(
     face the same demand (the F1 fairness rule) and their curves compare."""
     _reset_id_counters()
     set_order_seed(GUI_ORDER_SEED)
+    # Canonical fixed demand: every world reads the same 15h x 3000
+    # lines/hr order book (order N identical across slotting arms).
+    set_order_book(ensure_order_book())
     env = Environment(slotting=slotting, picker_strategy=picker_strategy)
     verify_graph(env.graph, env.tiles)
     dispatcher = Dispatcher(env.tiles, strategies=strategies, pickers=env.pickers)

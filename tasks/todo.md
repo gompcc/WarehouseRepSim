@@ -115,6 +115,18 @@ slotting-specific docs/figures while that work is in flight. This session
 owns pickers/dispatcher/GUI. Headless experiment runs are ON HOLD until
 the user says go (applies to both sessions' sweeps).
 
+📖 FOR THE SLOTTING SESSION — canonical order book (user spec, later
+2026-07-14): demand is now a FIXED pregenerated list, 15 h × 3,000
+lines/hr (2,243 orders / 45,007 lines; sizes N(20,9); half-normal product
+frequency), generated deterministically (orderbook.py, BOOK_SEED) and
+committed at `data/order_book.json`. **Empirical SKU counts — "the most
+commonly occurring" — are at `data/order_book_frequencies.json`** (or
+`orderbook.sku_frequencies(ensure_order_book())`): aisle_proximal &
+friends should rank by THESE counts rather than the analytic sku_weight
+curve. Orders consume the book by default in both headless
+(`order_book=True`) and the GUI; seeds are window offsets into the book
+(paired across arms, varying across seeds).
+
 ---
 
 # Toggleable Dispatch Strategy Modules (2026-07-14)

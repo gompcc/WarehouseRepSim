@@ -12,7 +12,7 @@ import logging
 import time as _time
 
 from .enums import AGVState, CartState
-from .models import Cart, Order, Job, set_order_seed
+from .models import Cart, Order, Job, set_order_seed, set_order_book
 from .agv import AGV
 from .environment import Environment
 from .dispatcher import Dispatcher
@@ -42,6 +42,7 @@ def run_headless(
     export: bool = True,
     slotting: str = "sequential",
     picker_strategy: str = "static",
+    order_book: bool = True,
     snapshot_interval: float = 60.0,
     results_json: str | None = None,
 ) -> dict:
@@ -75,6 +76,13 @@ def run_headless(
 
     _reset_id_counters()
     set_order_seed(seed)
+    # Canonical fixed demand (15h x 3000 lines/hr book) by default — every
+    # arm faces the same order flow; seeds select windows into the book.
+    if order_book:
+        from .orderbook import ensure_order_book
+        set_order_book(ensure_order_book())
+    else:
+        set_order_book(None)
     if isinstance(strategies, dict):
         strategies = StrategyConfig(**strategies)
     wall_start = _time.monotonic()
@@ -140,6 +148,7 @@ def run_headless(
 
     wall_elapsed = _time.monotonic() - wall_start
     env.events.close()
+    set_order_book(None)  # don't leak the book into direct Order() callers
 
     # Export results (same file as GUI); sweeps pass export=False to keep
     # results/sim_results.md from drowning in hundreds of grid-search runs
@@ -179,6 +188,7 @@ def run_headless(
         "strategies": dispatcher.strategies.active_names(),
         "slotting": slotting,
         "picker_strategy": picker_strategy,
+        "order_book": order_book,
         "completed_orders": completed,
         "orders_per_hour": orders_per_hour,
         "avg_cycle_time": avg_cycle,

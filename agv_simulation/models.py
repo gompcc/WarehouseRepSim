@@ -55,6 +55,7 @@ class Cart:
 
 
 _order_seed: int | None = None
+_order_book: list[list[int]] | None = None
 
 
 def set_order_seed(seed: int | None) -> None:
@@ -63,6 +64,17 @@ def set_order_seed(seed: int | None) -> None:
     comparison of dispatch strategies against the same demand."""
     global _order_seed
     _order_seed = seed
+
+
+def set_order_book(book: list[list[int]] | None) -> None:
+    """Serve orders from a fixed pregenerated book (the canonical demand;
+    see ``orderbook.py``). Order N takes the book entry at
+    ``(N-1 + offset) % len(book)`` where the offset derives from the order
+    seed — arms stay PAIRED per seed (identical flow), while different
+    seeds read different windows of the same demand for error bars.
+    ``None`` restores per-order random sampling."""
+    global _order_book
+    _order_book = book
 
 
 class Order:
@@ -84,20 +96,28 @@ class Order:
     def __init__(self) -> None:
         self.order_id: int = Order._next_id
         Order._next_id += 1
-        rng = (
-            random.Random(_order_seed * 1_000_003 + self.order_id)
-            if _order_seed is not None
-            else random
-        )
         from .aisles import get_catalog  # runtime import: models loads first
         catalog = get_catalog()
-        n_lines = max(1, round(rng.gauss(ORDER_LINES_MEAN, ORDER_LINES_SD)))
+
+        if _order_book:
+            # Canonical fixed demand: order N is a book entry (per-seed
+            # window offset keeps arms paired while seeds vary)
+            offset = (_order_seed or 0) * 997 % len(_order_book)
+            skus = _order_book[(self.order_id - 1 + offset) % len(_order_book)]
+        else:
+            rng = (
+                random.Random(_order_seed * 1_000_003 + self.order_id)
+                if _order_seed is not None
+                else random
+            )
+            n_lines = max(1, round(rng.gauss(ORDER_LINES_MEAN, ORDER_LINES_SD)))
+            # Popularity-weighted: hot SKUs (low ids) appear in many
+            # orders, which is what makes slotting strategies matter.
+            skus = catalog.sample_skus(n_lines, rng)
 
         self.lines: list[int] = []                     # flat SKU ids, one per line
         self.skus_by_station: dict[int, list[int]] = {}
-        # Popularity-weighted: hot SKUs (low ids) appear in many orders,
-        # which is what makes slotting strategies matter.
-        for sku in catalog.sample_skus(n_lines, rng):
+        for sku in skus:
             num = int(catalog.station_of(sku)[1:])
             self.skus_by_station.setdefault(num, []).append(sku)
             self.lines.append(sku)

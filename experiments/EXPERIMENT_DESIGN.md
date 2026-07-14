@@ -152,9 +152,19 @@ number is one the reader can't act on.
   derived from the active slotting's zoning. Slotting legitimately changing
   how many stations an order touches is an **effect to measure, not a
   confound to remove**. Verify with a checksum: for a given seed, order N's
-  SKU multiset must be byte-identical across all 4 slotting arms (assert in
+  SKU multiset must be byte-identical across all slotting arms (assert in
   the runner). NOTE: results predating this change are not comparable
   (order sizes and station-visit counts both shifted).
+  **Superseded by the canonical ORDER BOOK (user spec, later 2026-07-14):**
+  demand is now a fixed pregenerated list — 15 h × 3,000 lines/hr ≈ 45,000
+  lines (2,243 orders; sizes N(20,9) floor 1; half-normal product
+  frequency), persisted at `data/order_book.json` with its count table at
+  `data/order_book_frequencies.json` ("the most commonly occurring" —
+  frequency-based slotting like aisle_proximal consumes THIS, not the
+  analytic curve). `run_headless(order_book=True)` is the default; order N
+  is a book entry, so arms are identical by construction. Seeds read the
+  same book at deterministic per-seed offsets — paired across arms,
+  varying across seeds.
 - **F2 — Never recalibrate walk time per arm.** `WALK_TIME_FIXED/SCALE` were
   fit to make the *baseline* geometry hit μ30/σ10. Re-fitting per slotting
   arm would erase the very effect under test. Freeze the constants; report
