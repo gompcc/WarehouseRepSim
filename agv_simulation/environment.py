@@ -69,10 +69,13 @@ class Environment:
         tiles: dict[tuple[int, int], Tile] | None = None,
         stuck_threshold: float = STUCK_WARN_SECONDS,
         event_jsonl: str | None = None,
+        slotting: str = "sequential",
     ) -> None:
         self.tiles = tiles if tiles is not None else build_map()
         self.graph = build_graph(self.tiles)
-        self.catalog = init_catalog(self.tiles)  # 2000-SKU aisle catalog (PRD §14)
+        # 2000-SKU aisle catalog (PRD §14); slotting picks the SKU placement
+        # strategy (sequential / aisle_proximal / fibonacci / velocity)
+        self.catalog = init_catalog(self.tiles, slotting=slotting)
         self.pickers = PickerManager(self.tiles)  # shadow-mode pickers (PRD §14.9)
         self.agvs: list[AGV] = []
         self.carts: list[Cart] = []

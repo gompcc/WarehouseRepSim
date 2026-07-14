@@ -40,6 +40,7 @@ def run_headless(
     seed: int | None = None,
     strategies: StrategyConfig | dict | None = None,
     export: bool = True,
+    slotting: str = "sequential",
 ) -> dict:
     """Run the simulation without pygame, using a fixed timestep.
 
@@ -70,7 +71,7 @@ def run_headless(
         strategies = StrategyConfig(**strategies)
     wall_start = _time.monotonic()
 
-    env = Environment(event_jsonl=event_jsonl)
+    env = Environment(event_jsonl=event_jsonl, slotting=slotting)
     env.agv_preload_remaining = num_agvs
     env.preload_remaining = num_carts
     dispatcher = Dispatcher(env.tiles, strategies=strategies, pickers=env.pickers)

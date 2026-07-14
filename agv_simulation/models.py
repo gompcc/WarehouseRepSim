@@ -94,9 +94,10 @@ class Order:
         self.picks: list[int] = []                     # flat SKU ids
         self.skus_by_station: dict[int, list[int]] = {}
         for sid in visited:
-            zone = catalog.station_skus[sid]
             n = max(1, round(rng.gauss(PICKS_PER_VISIT_MEAN, PICKS_PER_VISIT_SD)))
-            skus = sorted(rng.sample(zone, min(n, len(zone))))
+            # Popularity-weighted: hot SKUs (low ids) appear in many orders,
+            # which is what makes slotting strategies matter.
+            skus = catalog.sample_zone_skus(sid, n, rng)
             self.skus_by_station[int(sid[1:])] = skus
             self.picks.extend(skus)
 

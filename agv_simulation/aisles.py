@@ -1,4 +1,5 @@
-"""Product aisles: racking geometry, the 2000-SKU catalog, and picker walking.
+"""Product aisles: racking geometry, the 2000-SKU catalog, picker walking,
+SKU popularity, and toggleable slotting strategies.
 
 Three banks of horizontal bi-level racking runs (see PRD Section 14). Pickers
 walk in the walkways between runs and may only enter a walkway at its two
@@ -6,9 +7,37 @@ ends — never through racking. Every interior run has pick faces on both sides
 (N face serves the walkway above it, S face the walkway below); the top run
 of a bank has only a S face and the bottom run only a N face.
 
-The catalog assigns every SKU (1..NUM_SKUS) one slot and zones each slot to
-the S station with the shortest walking distance. Layout is fully
-deterministic — no RNG — so SKU positions are stable across runs.
+Physical **locations** (geometry) are separated from **SKUs** (demand): a
+slotting strategy is a permutation assigning SKU ids to locations. SKU id is
+popularity rank — SKU 1 is ordered most, with a bell-shaped (half-normal)
+demand curve down to SKU 2000 (~90x less frequent).
+
+Slotting strategies (toggle via ``init_catalog(tiles, slotting=...)`` /
+``run_headless(slotting=...)``):
+
+- ``sequential``      — SKU k at the k-th location, left→right, top→down.
+- ``aisle_proximal``  — same SKUs per aisle as sequential, but within each
+                        aisle the popular ones sit nearest the slot's own
+                        pick station (station↔SKU ownership unchanged).
+- ``fibonacci``       — the highway ring is the "center": locations are
+                        ranked by distance to the ring and filled in shells
+                        whose sizes grow like Fibonacci numbers, most popular
+                        shells hugging the track (central aisles naturally
+                        invert since their middles are farthest from the
+                        ring). Within a shell order stays geometric, spreading
+                        hot SKUs around the whole loop.
+- ``velocity``        — global greedy lower bound: locations sorted by walk
+                        distance from their zone station; most popular SKU
+                        gets the cheapest location.
+
+Zoning (which station's picker owns a location) is purely geometric and does
+NOT change with slotting; what changes is which SKU sits where — and hence
+each station's demand mix and walking distances.
+
+Walk-time calibration is FROZEN (user decision): the constants below were
+fitted once against the *sequential* layout so a pick averages 30 s
+(σ 10 s). Slotting experiments must show up as walking-time differences, so
+these constants are never re-fitted per strategy.
 
 Scale: 1 tile = METERS_PER_TILE metres; distances returned are in metres.
 """
@@ -16,23 +45,25 @@ Scale: 1 tile = METERS_PER_TILE metres; distances returned are in metres.
 from __future__ import annotations
 
 import logging
-from dataclasses import dataclass, replace
+import math
+from dataclasses import dataclass
 
 from .enums import TileType
 from .constants import (
     NUM_SKUS, METERS_PER_TILE, RACK_LEVELS, PICKER_WALK_SPEED,
+    LEFT_HWY_COL, RIGHT_HWY_COL, NORTH_HWY_ROW, EAST_HWY_ROW,
 )
 
 logger = logging.getLogger(__name__)
 
+SLOTTING_STRATEGIES = ("sequential", "aisle_proximal", "fibonacci", "velocity")
+
 # ----------------------------------------------------------------------
-# Walk-time calibration (user spec, 2026-07-14): the round-trip walking
-# time per pick, over all (station, zoned SKU) pairs, must have mean 30 s
-# and sd 10 s — "near" picks ~20 s, "far" ~40 s. The raw geometry gives
-# mean 26.2 s / sd 9.7 s at 1.4 m/s; the affine fit below maps it to the
-# target exactly (measured p16 = 19.7 s, p84 = 41.3 s — matching the
-# near-20 / far-40 intent). Re-derive with calibration_stats() if the
-# bank geometry ever changes.
+# Walk-time calibration (user spec, 2026-07-14): fitted ONCE against the
+# sequential layout so the round-trip walking time per pick has mean 30 s
+# and sd 10 s ("near" ~20 s, "far" ~40 s). FROZEN across slotting
+# strategies — placement experiments measure walking deltas, so re-fitting
+# per strategy would erase the effect being studied.
 # ----------------------------------------------------------------------
 WALK_TIME_FIXED = 2.93   # s per pick: leaving/re-approaching the cart
 WALK_TIME_SCALE = 1.0330  # stretch on the pure distance/speed time
@@ -60,37 +91,127 @@ BANKS: tuple[Bank, ...] = (
 
 
 @dataclass(frozen=True)
-class Slot:
-    """One pick location. ``x`` is in tile units; walking uses metres."""
-    sku: int
+class Location:
+    """One physical pick location (geometry only, no SKU)."""
+    index: int        # 1..NUM_SKUS in sequential (geometric) order
     bank: str
     run_row: int
     face: str         # 'N' = picked from the walkway above, 'S' = below
     level: int        # 0 = lower shelf, 1 = upper
     x: float          # slot centre, tile units
-    walkway_row: float  # row a picker stands in to pick this slot
-    station: str = ""   # assigned S station (set during catalog build)
+    walkway_row: float  # row a picker stands in to pick this location
+    walkway_id: tuple[str, int] = ("", 0)  # (bank, walkway index) — one aisle
+
+
+@dataclass(frozen=True)
+class Slot:
+    """A SKU bound to a location (the picker/renderer-facing view)."""
+    sku: int
+    bank: str
+    run_row: int
+    face: str
+    level: int
+    x: float
+    walkway_row: float
+    station: str = ""   # geometric zone owner (picker who serves this slot)
+
+
+def sku_weight(sku: int) -> float:
+    """Demand weight of a SKU: bell-shaped (half-normal) over popularity
+    rank. SKU 1 is hottest; SKU NUM_SKUS is ~e^-4.5 ≈ 1/90th as frequent."""
+    z = 3.0 * (sku - 1) / max(NUM_SKUS - 1, 1)
+    return math.exp(-0.5 * z * z)
+
+
+def _ring_distance(x: float, y: float) -> float:
+    """Distance (tiles) from a point to the one-way highway ring."""
+    return min(
+        abs(x - LEFT_HWY_COL), abs(x - RIGHT_HWY_COL),
+        abs(y - NORTH_HWY_ROW), abs(y - EAST_HWY_ROW),
+    )
+
+
+def _fibonacci_shells(total: int) -> list[int]:
+    """Shell sizes growing like Fibonacci, scaled to sum to *total*."""
+    fib = [1, 1]
+    while sum(fib) < 34:  # 1 1 2 3 5 8 13 -> 7 shells
+        fib.append(fib[-1] + fib[-2])
+    scale = total / sum(fib)
+    sizes = [max(1, round(f * scale)) for f in fib]
+    sizes[-1] += total - sum(sizes)  # exact total
+    return sizes
 
 
 class Catalog:
-    """The 2000-SKU catalog: slots, station zoning, and walk distances."""
+    """The 2000-SKU catalog: locations, slotting, zoning, walk distances."""
 
-    def __init__(self, tiles: dict) -> None:
-        self.station_pos = _station_centroids(tiles)
-        self.slots: dict[int, Slot] = _layout_slots()
-        self.station_skus: dict[str, list[int]] = {s: [] for s in self.station_pos}
-        for sku, slot in self.slots.items():
-            station = min(
-                self.station_pos,
-                key=lambda s: self.walk_distance(s, sku),
+    def __init__(self, tiles: dict, slotting: str = "sequential") -> None:
+        if slotting not in SLOTTING_STRATEGIES:
+            raise ValueError(
+                f"unknown slotting {slotting!r}; pick one of {SLOTTING_STRATEGIES}"
             )
-            self.slots[sku] = replace(slot, station=station)
-            self.station_skus[station].append(sku)
-        counts = {s: len(v) for s, v in sorted(self.station_skus.items())}
-        logger.info("[Aisles] Catalog: %d SKUs zoned %s", len(self.slots), counts)
+        self.slotting = slotting
+        self.station_pos = _station_centroids(tiles)
+        self.locations: list[Location] = _layout_locations()
 
-    def station_of(self, sku: int) -> str:
-        return self.slots[sku].station
+        # Geometric zoning: each location belongs to the station with the
+        # shortest walk. Independent of which SKU ends up there.
+        self._loc_station: dict[int, str] = {}
+        self._loc_walk: dict[int, float] = {}
+        for loc in self.locations:
+            best_sid, best_d = None, float("inf")
+            for sid in self.station_pos:
+                d = self._walk_distance_to(sid, loc.x, loc.walkway_row, loc.bank)
+                if d < best_d:
+                    best_sid, best_d = sid, d
+            self._loc_station[loc.index] = best_sid
+            self._loc_walk[loc.index] = best_d
+
+        # Slotting: permutation sku -> location
+        assign = {
+            "sequential": _assign_sequential,
+            "aisle_proximal": _assign_aisle_proximal,
+            "fibonacci": _assign_fibonacci,
+            "velocity": _assign_velocity,
+        }[slotting]
+        sku_to_loc: dict[int, Location] = assign(
+            self.locations, self._loc_station, self._loc_walk,
+        )
+
+        self.slots: dict[int, Slot] = {}
+        self.station_skus: dict[str, list[int]] = {s: [] for s in self.station_pos}
+        self.weights: dict[int, float] = {}
+        for sku, loc in sku_to_loc.items():
+            station = self._loc_station[loc.index]
+            self.slots[sku] = Slot(
+                sku=sku, bank=loc.bank, run_row=loc.run_row, face=loc.face,
+                level=loc.level, x=loc.x, walkway_row=loc.walkway_row,
+                station=station,
+            )
+            self.station_skus[station].append(sku)
+            self.weights[sku] = sku_weight(sku)
+        for skus in self.station_skus.values():
+            skus.sort()
+
+        counts = {s: len(v) for s, v in sorted(self.station_skus.items())}
+        logger.info(
+            "[Aisles] Catalog (slotting=%s): %d SKUs zoned %s | demand-weighted"
+            " walk %.1f m one-way",
+            slotting, len(self.slots), counts, self.demand_weighted_walk_m(),
+        )
+
+    # -- walking -----------------------------------------------------------
+
+    def _walk_distance_to(
+        self, station_id: str, x: float, walkway_row: float, bank_name: str,
+    ) -> float:
+        bank = next(b for b in BANKS if b.name == bank_name)
+        sx, sy = self.station_pos[station_id]
+        best = float("inf")
+        for end_x in (bank.col_start - 0.5, bank.col_end + 0.5):
+            d = abs(sx - end_x) + abs(sy - walkway_row) + abs(x - end_x)
+            best = min(best, d)
+        return best * METERS_PER_TILE
 
     def walk_path(
         self, station_id: str, sku: int,
@@ -114,11 +235,46 @@ class Catalog:
 
     def walk_distance(self, station_id: str, sku: int) -> float:
         """One-way walking distance in metres from station to slot."""
-        path = self.walk_path(station_id, sku)
-        d = 0.0
-        for (x1, y1), (x2, y2) in zip(path, path[1:]):
-            d += abs(x2 - x1) + abs(y2 - y1)
-        return d * METERS_PER_TILE
+        slot = self.slots[sku]
+        return self._walk_distance_to(
+            station_id, slot.x, slot.walkway_row, slot.bank,
+        )
+
+    def station_of(self, sku: int) -> str:
+        return self.slots[sku].station
+
+    # -- demand ------------------------------------------------------------
+
+    def sample_zone_skus(self, station_id: str, n: int, rng) -> list[int]:
+        """Popularity-weighted sample WITHOUT replacement from a zone."""
+        zone = self.station_skus.get(station_id, [])
+        if not zone:
+            return []
+        n = min(n, len(zone))
+        pool = list(zone)
+        weights = [self.weights[s] for s in pool]
+        chosen: list[int] = []
+        for _ in range(n):
+            r = rng.random() * sum(weights)
+            acc = 0.0
+            for i, w in enumerate(weights):
+                acc += w
+                if acc >= r:
+                    chosen.append(pool.pop(i))
+                    weights.pop(i)
+                    break
+        return sorted(chosen)
+
+    def demand_weighted_walk_m(self) -> float:
+        """Mean one-way walk per pick, weighted by SKU demand — THE slotting
+        comparison metric (calibration constants stay frozen)."""
+        total_w = 0.0
+        total_d = 0.0
+        for sku, slot in self.slots.items():
+            w = self.weights[sku]
+            total_w += w
+            total_d += w * self.walk_distance(slot.station, sku)
+        return total_d / total_w if total_w else 0.0
 
     def calibration_stats(self) -> dict:
         """Distribution of calibrated round-trip walk times per pick over
@@ -144,6 +300,10 @@ class Catalog:
         return self._calib
 
 
+# ----------------------------------------------------------------------
+# Geometry
+# ----------------------------------------------------------------------
+
 def _station_centroids(tiles: dict) -> dict[str, tuple[float, float]]:
     """Mean position of each S station's PICK_STATION tiles (cart spots)."""
     acc: dict[str, list[tuple[int, int]]] = {}
@@ -156,51 +316,100 @@ def _station_centroids(tiles: dict) -> dict[str, tuple[float, float]]:
     }
 
 
-def _layout_slots() -> dict[int, Slot]:
-    """Lay out exactly NUM_SKUS slots across all active faces and levels.
+def _layout_locations() -> list[Location]:
+    """Lay out exactly NUM_SKUS locations across all active faces and levels.
 
-    All (face, level) strips are concatenated into one line; slot centres are
-    placed uniformly along it, then mapped back to their strip. This yields
-    exactly NUM_SKUS slots with a uniform derived slot width.
+    All (face, level) strips are concatenated into one line; location centres
+    are placed uniformly along it, then mapped back to their strip. This
+    yields exactly NUM_SKUS locations with a uniform derived slot width.
     """
-    strips: list[tuple[Bank, int, str, int, float]] = []  # +face length (m)
+    strips: list[tuple[Bank, int, str, int, float, int]] = []
     for bank in BANKS:
         run_len = (bank.col_end - bank.col_start + 1) * METERS_PER_TILE
         rows = bank.run_rows
         for i, row in enumerate(rows):
-            faces = []
+            # face -> walkway index within the bank (aisle identity)
+            faces: list[tuple[str, int]] = []
             if i > 0:
-                faces.append("N")  # walkway between rows[i-1] and this run
+                faces.append(("N", i - 1))  # walkway above this run
             if i < len(rows) - 1:
-                faces.append("S")  # walkway below
-            for face in faces:
+                faces.append(("S", i))      # walkway below this run
+            for face, walkway in faces:
                 for level in range(RACK_LEVELS):
-                    strips.append((bank, row, face, level, run_len))
+                    strips.append((bank, row, face, level, run_len, walkway))
 
     total_len = sum(s[4] for s in strips)
     slot_width = total_len / NUM_SKUS
-    logger.info(
-        "[Aisles] %d strips, %.0f m of pick face x %d levels -> slot width %.3f m",
-        len(strips), total_len / RACK_LEVELS * 1.0, RACK_LEVELS, slot_width,
-    )
 
-    slots: dict[int, Slot] = {}
+    locations: list[Location] = []
     strip_idx = 0
-    strip_start = 0.0  # cumulative start of current strip along the line
-    for sku in range(1, NUM_SKUS + 1):
-        centre = (sku - 0.5) * slot_width
+    strip_start = 0.0
+    for index in range(1, NUM_SKUS + 1):
+        centre = (index - 0.5) * slot_width
         while centre > strip_start + strips[strip_idx][4]:
             strip_start += strips[strip_idx][4]
             strip_idx += 1
-        bank, row, face, level, _len = strips[strip_idx]
+        bank, row, face, level, _len, walkway = strips[strip_idx]
         offset_m = centre - strip_start
         x = bank.col_start + offset_m / METERS_PER_TILE - 0.5
         walkway_row = row - 1.0 if face == "N" else row + 1.0
-        slots[sku] = Slot(
-            sku=sku, bank=bank.name, run_row=row, face=face,
+        locations.append(Location(
+            index=index, bank=bank.name, run_row=row, face=face,
             level=level, x=x, walkway_row=walkway_row,
-        )
-    return slots
+            walkway_id=(bank.name, walkway),
+        ))
+    return locations
+
+
+# ----------------------------------------------------------------------
+# Slotting strategies — each returns {sku: Location}
+# ----------------------------------------------------------------------
+
+def _assign_sequential(locations, loc_station, loc_walk) -> dict[int, Location]:
+    """SKU k at the k-th location (popularity ignores geography)."""
+    return {loc.index: loc for loc in locations}
+
+
+def _assign_aisle_proximal(locations, loc_station, loc_walk) -> dict[int, Location]:
+    """Sequential's SKUs per (aisle, station) subgroup, re-ordered inside the
+    subgroup so the most popular SKU takes the location closest to its own
+    pick station. Station↔SKU ownership is identical to sequential."""
+    groups: dict[tuple, list[Location]] = {}
+    for loc in locations:
+        groups.setdefault((loc.walkway_id, loc_station[loc.index]), []).append(loc)
+    out: dict[int, Location] = {}
+    for group in groups.values():
+        skus = sorted(loc.index for loc in group)         # popularity order
+        by_dist = sorted(group, key=lambda l: loc_walk[l.index])
+        for sku, loc in zip(skus, by_dist):
+            out[sku] = loc
+    return out
+
+
+def _assign_fibonacci(locations, loc_station, loc_walk) -> dict[int, Location]:
+    """Fibonacci shells around the highway ring: the hottest SKUs live in the
+    thin innermost shell hugging the track, shell sizes growing golden-ratio
+    style outwards. Within a shell the geometric order is kept, so hot SKUs
+    spread around the whole loop instead of clumping."""
+    ranked = sorted(
+        locations, key=lambda l: (_ring_distance(l.x, l.walkway_row), l.index),
+    )
+    out: dict[int, Location] = {}
+    sku = 1
+    for size in _fibonacci_shells(len(ranked)):
+        shell = sorted(ranked[:size], key=lambda l: l.index)  # geometric order
+        ranked = ranked[size:]
+        for loc in shell:
+            out[sku] = loc
+            sku += 1
+    return out
+
+
+def _assign_velocity(locations, loc_station, loc_walk) -> dict[int, Location]:
+    """Global greedy ABC slotting: most popular SKU gets the location with
+    the shortest walk from its zone station. The walking lower bound."""
+    by_cost = sorted(locations, key=lambda l: (loc_walk[l.index], l.index))
+    return {sku: loc for sku, loc in zip(range(1, NUM_SKUS + 1), by_cost)}
 
 
 # ----------------------------------------------------------------------
@@ -210,10 +419,10 @@ def _layout_slots() -> dict[int, Slot]:
 _catalog: Catalog | None = None
 
 
-def init_catalog(tiles: dict) -> Catalog:
+def init_catalog(tiles: dict, slotting: str = "sequential") -> Catalog:
     """Build (or rebuild) the catalog from the live tile map."""
     global _catalog
-    _catalog = Catalog(tiles)
+    _catalog = Catalog(tiles, slotting=slotting)
     return _catalog
 
 
