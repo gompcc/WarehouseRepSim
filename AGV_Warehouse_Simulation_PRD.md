@@ -16,6 +16,10 @@
 8. [Phase Implementation Plan](#8-phase-implementation-plan)
 9. [Testing & Success Criteria](#9-testing--success-criteria)
 10. [Future Enhancements](#10-future-enhancements)
+11. Version Control Strategy
+12. Claude Code Usage Strategy
+13. Final Notes
+14. [Picker & Product Aisle Model](#14-picker--product-aisle-model) **← newest subsystem (2026-07)**
 
 ---
 
@@ -176,10 +180,11 @@ class JobState(Enum):
 ## 3. MAP & LAYOUT SPECIFICATION
 
 ### 3.1 Tile Configuration
-- **Tile Size:** 20 pixels × 20 pixels
-- **Grid Dimensions:** 60 tiles wide × 40 tiles tall
-- **Canvas Size:** 1200 pixels × 800 pixels (60×20, 40×20)
-- **Coordinate System:** (0, 0) at top-left corner
+- **Tile Size:** 16 pixels × 16 pixels *(was 20 px before the aisle expansion — see Section 14.2)*
+- **Grid Dimensions:** 86 tiles wide × 40 tiles tall *(was 60 wide; legacy content shifted +14 columns)*
+- **Canvas Size:** 1376 pixels × 640 pixels
+- **Coordinate System:** (0, 0) at top-left corner; 1 tile = 1 metre
+- **Note:** all coordinates elsewhere in Sections 1–13 are in *legacy* (pre-shift) columns; add 14 to get current columns.
 
 ### 3.2 Station Locations & Capacities
 
@@ -1666,7 +1671,133 @@ Please provide:
 
 ---
 
+## 14. PICKER & PRODUCT AISLE MODEL
+
+> **Status: IN PROGRESS (2026-07-14).** This section is the design spec for the
+> picker/aisle subsystem. Implementation plan and progress live in
+> `tasks/todo.md`. Layout follows the user's hand-drawn sketch (three banks of
+> horizontal racking aisles flanking and between the station columns).
+
+### 14.1 Motivation
+
+Until now, cart dwell time at a pick station was a constant
+(`PICK_TIME_PER_ITEM = 90s` × items). This section replaces that with a
+physical model: each S station has human **pickers** who walk into product
+**aisles** to fetch SKUs for the cart. Station dwell time now *emerges* from
+walking distances, SKU placement, and picker availability — making SKU slotting
+and picker staffing first-class optimization levers.
+
+### 14.2 Coordinate & Scale Changes (BREAKING)
+
+The aisle banks need floor space the old 60-col grid didn't have:
+
+| Constant | Old | New |
+|----------|-----|-----|
+| `TILE_SIZE` | 20 px | **16 px** |
+| `GRID_COLS` | 60 | **86** (14 added west, 12 added east) |
+| `GRID_ROWS` | 40 | 40 (unchanged) |
+| Map canvas | 1200×800 | **1376×640** |
+| Window | 1500×800 | **1676×640** |
+
+**All legacy map content shifts +14 columns** (`X` in old docs = `X + 14` now).
+E.g. AGV spawn tile (1,7) → (15,7); left highway col 9 → 23; right highway
+col 38 → 52. Rows are unchanged. **Scale: 1 tile = 1 metre.** AGV speed is
+1 tile/s = 1 m/s (unchanged).
+
+### 14.3 Aisle Geometry
+
+Three banks of horizontal racking runs. Pickers walk in the 2-tile walkways
+between runs and may only enter/exit a walkway at its two ends — **never
+through racking**. Racking is bi-level (2 shelf levels) with pick faces on both
+sides of every interior run (boundary runs have one active face). Aisle tiles
+are a new `TileType.AISLE_RACK`: not walkable by AGVs, excluded from the AGV
+graph, drawn as dark bars.
+
+| Bank | Columns (incl.) | Racking run rows | Runs | Run length | Active faces |
+|------|-----------------|------------------|------|-----------|--------------|
+| West | 0–12 | 10,13,16,19,22,25,28,31,34,37 | 10 | 13 m | 18 |
+| Central | 31–45 | 12,15,18,21,24,27,30,33 | 8 | 15 m | 14 |
+| East | 60–84 | 10,13,16,19,22,25,28,31,34,37 | 10 | 25 m | 18 |
+
+Total pick-face length: 18×13 + 14×15 + 18×25 = **894 m**.
+
+### 14.4 SKU Catalog (2000 products)
+
+- `NUM_SKUS = 2000`; SKU ids are integers 1–2000.
+- Each SKU has exactly one **slot**: (bank, run, face N/S, level 0/1, offset).
+- Slot width is derived: `894 m × 2 levels / 2000 = 0.894 m` per slot.
+- Slots are laid out deterministically (no RNG): bank by bank, run by run,
+  face by face, level by level, west→east — so a SKU's position is stable
+  across runs and sessions.
+- **Station zoning (nearest-station):** each slot is assigned to the S station
+  with the smallest *walking* distance (per 14.5) from that station's cart
+  positions. Expected outcome: west bank → S1–S4, central bank → S2/S4/S6/S8,
+  east bank → S5/S7/S9. Station SKU counts are intentionally uneven.
+- Catalog lives in `agv_simulation/aisles.py`, built once at Environment
+  construction (`init_catalog(tiles)` / `get_catalog()`).
+
+### 14.5 Picker Walking Model
+
+- `PICKERS_PER_STATION = 1` (sweepable).
+- `PICKER_WALK_SPEED = 1.4` m/s; `PICK_GRAB_TIME = 10.0` s per SKU
+  (covers locate + reach both levels; level does not change walk distance).
+- Walk path for one pick, from the station's cart position (centroid of its
+  PICK_STATION tiles): Manhattan walk to the nearer **end** of the walkway
+  serving the slot's face, then along the walkway to the slot's offset.
+  Distance is the min over both walkway ends. A picker carries **one SKU line
+  per trip** (any quantity of that SKU), so every order line = one round trip:
+  `2 × distance / 1.4 + 10 s`.
+- Pickers never use the AGV graph and AGVs ignore pickers (no collision
+  between the two classes — representative model).
+
+### 14.6 Order & Cart Lifecycle Changes (BREAKING)
+
+- `Order.picks` was a list of station numbers 1–9; it is now a list of
+  **1–40 random SKU ids** (uniform count, uniform SKU choice).
+- `Order.stations_to_visit` is *derived*: the set of stations owning the
+  order's SKUs (via the catalog zoning). Large orders visit most stations.
+- On `MOVE_TO_PICK` completion the dispatcher no longer sets
+  `process_timer = 90 × items`. Instead the cart enters `PICKING` and joins
+  the station picker's FIFO queue. The picker fetches each of the cart's SKUs
+  for *that station*, one round trip per SKU line.
+- **Release rule:** a cart may leave a station only when every one of its
+  SKUs zoned to that station has been picked (picker sets
+  `cart.picking_complete = True` and calls `order.complete_station`).
+- The Environment's stuck-cart watchdog treats a `PICKING` cart waiting in a
+  picker queue as "processing" (not stuck).
+
+### 14.7 New Constants (constants.py)
+
+```python
+NUM_SKUS            = 2000
+METERS_PER_TILE     = 1.0
+PICKERS_PER_STATION = 1
+PICKER_WALK_SPEED   = 1.4   # m/s
+PICK_GRAB_TIME      = 10.0  # s per SKU line
+ORDER_MIN_LINES     = 1
+ORDER_MAX_LINES     = 40
+RACK_LEVELS         = 2
+# PICK_TIME_PER_ITEM (90s) is REMOVED — dwell time is now emergent.
+```
+
+### 14.8 New Metrics
+
+Per station and fleet-wide, exported in headless results and the GUI panel:
+picks completed, metres walked, mean walk time per pick, picker utilization
+(busy fraction), and mean picker-queue wait per cart. Expect orders/hr to
+drop sharply vs. the 90s-flat model — orders now average ~20 lines and visit
+~8 stations. Historical results in `results/sim_results.md` are **not
+comparable** after this change.
+
+---
+
 ## DOCUMENT VERSION HISTORY
+
+**Version 3.0** - July 14, 2026
+- Added Section 14: Picker & Product Aisle Model (2000-SKU catalog, three
+  aisle banks, picker walking model, SKU-based orders)
+- BREAKING: grid 60→86 cols (+14 west shift), TILE_SIZE 20→16 px,
+  orders are SKU lists (1–40), PICK_TIME_PER_ITEM removed
 
 **Version 2.1** - January 28, 2026
 - Added headless mode (`run_headless()`) with instant-spawn pre-placement

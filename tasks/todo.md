@@ -1,48 +1,39 @@
-# Environment/Dispatcher Separation + Stuck-Cart Bug Hunt (2026-07-14)
+# Picker & Product Aisle Model (2026-07-14)
 
-Goal: stable, realistic environment cleanly separated from the dispatcher policy;
-robust structured logging; find & fix where carts get stuck; optimize throughput.
+(Previous plan — Environment/Dispatcher separation — is complete; see git
+history of this file and results/sim_results.md.)
 
-Baseline (this session, pre-change): 10 AGVs / 25 carts / 8h → **43.4 orders/hr**,
-avg_cycle 1099s (only 13 samples — metrics bug), blocked 9.3%.
+Goal: add three banks of bi-level picking aisles (per user's sketch), a
+2000-SKU catalog with one slot per SKU, SKU-based orders (1–40 lines), and
+per-station pickers whose walking time (1.4 m/s + 10 s grab, one SKU line per
+round trip, aisles enterable only at the ends) determines cart dwell time at
+stations. Full spec: **PRD Section 14**.
 
-## Phase 1 — Environment layer + robust logging
-- [x] Create `agv_simulation/environment.py` with `Environment` class:
-      owns tiles/graph/agvs/carts, cart spawning, `step(dt)` (AGV + cart updates),
-      and a structured `EventLog` (JSONL-able event stream + counters)
-- [x] Stuck-cart watchdog in Environment: cart with no lifecycle progress for
-      N sim-seconds → warning event + per-cart stuck stats
-- [x] Physics guard: cart position may only change while carried by an AGV
-      (detects teleports) — environment audits realism
-- [x] Refactor `headless.py` to drive `Environment` (same placement/spawn cadence)
-- [x] Refactor `__main__.py` to drive `Environment` (GUI keeps interaction code)
+Decisions locked with user (2026-07-14):
+- Expand grid to 86 cols (+14 west, +12 east), TILE_SIZE 20→16 px
+- 1 picker per station (sweepable constant)
+- 1.4 m/s walk + 10 s grab, replaces flat PICK_TIME_PER_ITEM=90s
+- SKU→station zoning by nearest walking distance
 
-## Phase 2 — Diagnose at speed (headless ≈ 1300x real time)
-- [x] Run instrumented sim → found: 4/25 carts permanently dead (orphaned in
-      WAITING_FOR_STATION with no order), 485 stuck events, cycle metric broken
+## Plan
+- [x] Commit prior session's uncommitted work separately
+- [x] Document design in PRD Section 14 + this plan (commit)
+- [ ] **Stage 1 — grid expansion**: constants.py (TILE_SIZE 16, GRID_COLS 86,
+      all coords +14), map_builder.py (build_map literals, build_graph
+      junctions/direction rules, verify_graph tests), renderer label
+      positions, cart draw size scaled to tile. Verify: headless 1h run
+      before/after gives comparable orders/hr; tests pass. Commit.
+- [ ] **Stage 2 — aisles module**: agv_simulation/aisles.py with bank
+      geometry (PRD 14.3), exact-2000 slot layout, nearest-station zoning,
+      walk path/distance (min over both walkway ends). TileType.AISLE_RACK +
+      renderer bars. Snapshot PNG to eyeball vs sketch. Commit.
+- [ ] **Stage 3 — pickers + SKU orders**: Order → 1–40 SKU ids with derived
+      stations_to_visit; picker.py (per-station FIFO, walk/grab cycle,
+      release rule → cart.picking_complete); dispatcher MOVE_TO_PICK /
+      PICKING integration; environment tick + stuck-watchdog exemption;
+      renderer picker dots; headless + export picker metrics. Commit.
+- [ ] **Stage 4 — verify**: pytest, 8h headless run, new snapshot, sanity-check
+      walk times (~10–40 m round trips), record results below. Commit.
 
-## Phase 3 — Bug fixes (validated against stuck report)
-- [x] Orphaned-cart deadlock: WAITING cart with `order=None` matched no dispatch
-      branch → re-route to Box Depot (`_create_jobs`)
-- [x] Cycle-time metric: stamp start on every order cycle, not just cart's first
-- [x] Teleport on give-up: release cart at AGV's actual position; NEVER drop on
-      highway tiles (abandoned cart gridlocks the one-way loop)
-- [x] Double pack-off: `Order.packed` flag routes aborted returns home
-- [x] Retarget hair-trigger: failed retargets now spaced out (were burning all
-      3 attempts in 0.3s of the same congestion)
-- [x] `_find_buffer_spot` excludes AGV-occupied tiles (parked AGV made target
-      unreachable → retarget thrash)
-- [x] ENVIRONMENT: head-on deadlock 2-cycle at junction (9,7)↔(8,7) removed —
-      froze entire warehouse when two AGVs met (seed-0 repro, 18 min in)
-- [x] ENVIRONMENT: row 8 cols 1-8 dead-end trap at (1,8) — added merge-north
-      edges; graph now sink-free and fully mutually reachable (verified)
-
-## Phase 4 — Verification
-- [x] pytest suite green (29 tests, incl. 3 new regression tests)
-- [ ] 12-seed deadlock hunt clean at 10/25
-- [ ] A/B headless runs (10/25 and 14/25) vs baseline; compare orders/hr,
-      stuck stats, thrash counts (interim: 14/25 hit 77.7-80.2/hr vs record 62)
-- [ ] Update tasks/lessons.md + results/sim_results.md with iteration entry
-
-## Review
-(to fill in when done)
+## Review / Results
+(to be filled in as stages complete)
