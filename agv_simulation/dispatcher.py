@@ -297,7 +297,7 @@ class Dispatcher:
                     self.cart_start_times.setdefault(
                         cart.cart_id, self._sim_elapsed,
                     )
-                    logger.info(
+                    logger.debug(
                         "[Order #%d] Cart C%d: picks=%s, stations=%s",
                         cart.order.order_id, cart.cart_id,
                         cart.order.picks,
@@ -326,7 +326,7 @@ class Dispatcher:
                             if buffer:
                                 job = Job(JobType.MOVE_TO_BUFFER, cart, buffer)
                                 self.pending_jobs.append(job)
-                                logger.info(
+                                logger.debug(
                                     "[Dispatcher] C%d: station %s full, buffering to %s",
                                     cart.cart_id, sid, buffer,
                                 )
@@ -347,7 +347,7 @@ class Dispatcher:
                                 if buffer:
                                     job = Job(JobType.MOVE_TO_BUFFER, cart, buffer)
                                     self.pending_jobs.append(job)
-                                    logger.info(
+                                    logger.debug(
                                         "[Dispatcher] C%d: Pack-off full, buffering to %s",
                                         cart.cart_id, buffer,
                                     )
@@ -357,7 +357,7 @@ class Dispatcher:
                             if buffer:
                                 job = Job(JobType.MOVE_TO_BUFFER, cart, buffer)
                                 self.pending_jobs.append(job)
-                                logger.info(
+                                logger.debug(
                                     "[Dispatcher] C%d: Pack-off full (%d/%d), buffering to %s",
                                     cart.cart_id, at_packoff, STATIONS["Pack_off"], buffer,
                                 )
@@ -377,7 +377,7 @@ class Dispatcher:
                     if target:
                         job = Job(JobType.PICKUP_TO_BOX_DEPOT, cart, target)
                         self.pending_jobs.append(job)
-                        logger.info(
+                        logger.debug(
                             "[Dispatcher] C%d orphaned at %s — re-routing to Box Depot",
                             cart.cart_id, cart.pos,
                         )
@@ -467,7 +467,7 @@ class Dispatcher:
                 self.active_jobs.append(job)
                 assigned.append(job)
                 free_agvs.remove(best_agv)
-                logger.info(
+                logger.debug(
                     "[Dispatcher] AGV %d assigned Job #%d (%s) → pickup C%d dist=%d",
                     best_agv.agv_id, job.job_id, job.job_type.value,
                     job.cart.cart_id, dist,
@@ -494,7 +494,7 @@ class Dispatcher:
         if job.job_type == JobType.PICKUP_TO_BOX_DEPOT:
             cart.state = CartState.AT_BOX_DEPOT
             cart.process_timer = BOX_DEPOT_TIME
-            logger.info(
+            logger.debug(
                 "[Dispatcher] C%d arrived at Box Depot — processing %ss",
                 cart.cart_id, BOX_DEPOT_TIME,
             )
@@ -510,7 +510,7 @@ class Dispatcher:
                 len(cart.order.skus_remaining_at(station_num))
                 if cart.order else 0
             )
-            logger.info(
+            logger.debug(
                 "[Dispatcher] C%d at %s — %d lines for the picker",
                 cart.cart_id, job.station_id, remaining,
             )
@@ -520,7 +520,7 @@ class Dispatcher:
             cart.process_timer = PACKOFF_TIME
             if cart.order:
                 cart.order.packed = True
-            logger.info(
+            logger.debug(
                 "[Dispatcher] C%d at Pack-off — processing %ss",
                 cart.cart_id, PACKOFF_TIME,
             )
@@ -528,7 +528,7 @@ class Dispatcher:
         elif job.job_type == JobType.MOVE_TO_BUFFER:
             cart.state = CartState.WAITING_FOR_STATION
             cart.times_buffered += 1
-            logger.info(
+            logger.debug(
                 "[Dispatcher] C%d buffered at %s — waiting (buffered %dx)",
                 cart.cart_id, cart.pos, cart.times_buffered,
             )
@@ -546,7 +546,7 @@ class Dispatcher:
                 self.order_completion_times.append(self._sim_elapsed)
             # Recycled cart starts its next order cycle now
             self.cart_start_times[cart.cart_id] = self._sim_elapsed
-            logger.info(
+            logger.debug(
                 "[Dispatcher] C%d returned to Box Depot — completed orders: %d",
                 cart.cart_id, self.completed_orders,
             )
@@ -613,14 +613,14 @@ class Dispatcher:
                         job.target_pos = buffer
                         job.job_type = JobType.MOVE_TO_BUFFER
                         success = True
-                        logger.info(
+                        logger.debug(
                             "[Dispatcher] AGV %d: buffering C%d → %s",
                             agv.agv_id, job.cart.cart_id, buffer,
                         )
 
                 if success:
                     self._set_transit_state(job)
-                    logger.info(
+                    logger.debug(
                         "[Dispatcher] AGV %d carrying C%d → %s (%d tiles)",
                         agv.agv_id, job.cart.cart_id,
                         job.target_pos, len(agv.path),
@@ -742,7 +742,7 @@ class Dispatcher:
                         # same; keep carrying and let congestion clear.
                         agv.blocked_timer = 0.0
                         if agv.reroute(graph, agvs, tiles):
-                            logger.info(
+                            logger.debug(
                                 "[Dispatcher] Stuck AGV %d re-routed while carrying C%d",
                                 agv.agv_id, job.cart.cart_id,
                             )
@@ -804,7 +804,7 @@ class Dispatcher:
                                 best_dist = d
                                 best_tile = pos
                 if best_tile and blocker.set_destination(best_tile, graph, tiles):
-                    logger.info(
+                    logger.debug(
                         "[Collision] Nudged idle AGV %d from %s → %s",
                         blocker.agv_id, blocker.pos, best_tile,
                     )
@@ -824,7 +824,7 @@ class Dispatcher:
                 continue
             if agv.reroute(graph, agvs, tiles):
                 agv.last_reroute = agv.blocked_timer
-                logger.info(
+                logger.debug(
                     "[Collision] AGV %d re-routed (%d tiles)",
                     agv.agv_id, len(agv.path),
                 )
@@ -864,7 +864,7 @@ class Dispatcher:
                     best_dist = d
                     best = pos
             if best and agv.set_destination(best, graph, tiles):
-                logger.info(
+                logger.debug(
                     "[Dispatcher] Parking idle AGV %d off highway → %s",
                     agv.agv_id, best,
                 )

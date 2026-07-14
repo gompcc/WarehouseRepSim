@@ -185,6 +185,12 @@ class PickerManager:
         self.busy_seconds = 0.0
         self.elapsed = 0.0
         self._walk_sum_sq = 0.0  # for running sd of walk time per pick
+        # Per-station accumulators (experiments compare station workloads)
+        self.station_stats: dict[str, dict[str, float]] = {
+            sid: {"picks_done": 0, "carts_served": 0,
+                  "walk_seconds": 0.0, "busy_seconds": 0.0}
+            for sid in cat.station_pos
+        }
 
     # -- workload sampling ----------------------------------------------
 
@@ -261,11 +267,14 @@ class PickerManager:
                 result = picker.update(dt)
                 if serving:
                     self.busy_seconds += dt
+                    self.station_stats[sid]["busy_seconds"] += dt
                 if result is not None:
                     done_sku, walk_secs = result
                     self.picks_done += 1
                     self.walk_seconds_total += walk_secs
                     self._walk_sum_sq += walk_secs * walk_secs
+                    self.station_stats[sid]["picks_done"] += 1
+                    self.station_stats[sid]["walk_seconds"] += walk_secs
                     if had_cart is not None and had_cart.order is not None and hasattr(
                         had_cart.order, "mark_picked"
                     ):
@@ -274,6 +283,7 @@ class PickerManager:
                 if had_cart is not None and picker.cart is None and picker.state == Picker.IDLE:
                     self._tracked.discard(had_cart.cart_id)
                     self.carts_served += 1
+                    self.station_stats[sid]["carts_served"] += 1
                     self._complete_station_if_done(had_cart)
                     if had_cart.order is None:
                         self._served_orderless.add(had_cart.cart_id)
@@ -293,7 +303,7 @@ class PickerManager:
         num = int(sid[1:])
         if not order.skus_remaining_at(num) and num not in order.completed_stations:
             order.complete_station(num)
-            logger.info(
+            logger.debug(
                 "[Picker] C%d: all %d lines picked at %s — station complete",
                 cart.cart_id, order.items_at_station(num), sid,
             )
@@ -329,6 +339,20 @@ class PickerManager:
             "busy_fraction": (
                 self.busy_seconds / total_crew_seconds if total_crew_seconds else 0.0
             ),
+            "per_station": {
+                sid: {
+                    "picks_done": int(s["picks_done"]),
+                    "carts_served": int(s["carts_served"]),
+                    "walk_mean_s": (
+                        s["walk_seconds"] / s["picks_done"] if s["picks_done"] else 0.0
+                    ),
+                    "busy_fraction": (
+                        s["busy_seconds"] / (self.elapsed * len(self.pickers[sid]))
+                        if self.elapsed and self.pickers[sid] else 0.0
+                    ),
+                }
+                for sid, s in self.station_stats.items()
+            },
         }
 
     def all_pickers(self) -> list[Picker]:

@@ -11,7 +11,7 @@ from __future__ import annotations
 import logging
 import time as _time
 
-from .enums import AGVState
+from .enums import AGVState, CartState
 from .models import Cart, Order, Job, set_order_seed
 from .agv import AGV
 from .environment import Environment
@@ -41,6 +41,8 @@ def run_headless(
     strategies: StrategyConfig | dict | None = None,
     export: bool = True,
     slotting: str = "sequential",
+    snapshot_interval: float = 60.0,
+    results_json: str | None = None,
 ) -> dict:
     """Run the simulation without pygame, using a fixed timestep.
 
@@ -52,7 +54,12 @@ def run_headless(
       only once the previous has driven off the tile
 
     Returns a dict of performance metrics, including the environment's
-    ``stuck_report`` (stuck carts, buffer thrashing, physics violations).
+    ``stuck_report`` (stuck carts, buffer thrashing, physics violations)
+    and ``snapshots`` — a throughput time series sampled every
+    ``snapshot_interval`` sim-seconds (~480 rows per 8h run), the headless
+    counterpart of the GUI's live orders/hr strip. Pass ``results_json``
+    to also dump ``{metadata, summary, stuck_report, snapshots}`` to that
+    path (e.g. ``results/runs/<name>.json``) for programmatic comparison.
     """
     # Configure logging
     handlers: list[logging.Handler] = [logging.StreamHandler()]
@@ -89,6 +96,9 @@ def run_headless(
     blocked_ticks: dict[int, int] = defaultdict(int)
     total_tracked: dict[int, int] = defaultdict(int)
 
+    snapshots: list[dict] = []
+    next_snapshot = snapshot_interval
+
     while env.sim_elapsed < sim_duration:
         env.reserved_targets = dispatcher.job_targets()
         env.step(tick_dt)
@@ -105,6 +115,24 @@ def run_headless(
                 blocked_ticks[agv.agv_id] += 1
 
         total_ticks += 1
+
+        if snapshot_interval and env.sim_elapsed >= next_snapshot:
+            snapshots.append({
+                "t": round(env.sim_elapsed, 1),
+                "completed": dispatcher.completed_orders,
+                "active_agvs": sum(
+                    1 for a in env.agvs if a.state != AGVState.IDLE),
+                "blocked_agvs": sum(1 for a in env.agvs if a.is_blocked),
+                "waiting_carts": sum(
+                    1 for c in env.carts
+                    if c.state == CartState.WAITING_FOR_STATION),
+                "stuck_cum": env.events.counters.get("stuck", 0),
+                "fill": {
+                    sid: cur for sid, (cur, _cap, _rate)
+                    in dispatcher.get_station_fill(env.carts).items()
+                },
+            })
+            next_snapshot += snapshot_interval
 
     wall_elapsed = _time.monotonic() - wall_start
     env.events.close()
@@ -140,21 +168,47 @@ def run_headless(
                 stuck_report["stuck_events"], stuck_report["teleport_events"],
                 stuck_report["times_buffered"][:5])
 
-    return {
+    result = {
         "num_agvs": num_agvs,
         "num_carts": num_carts,
         "seed": seed,
         "strategies": dispatcher.strategies.active_names(),
+        "slotting": slotting,
         "completed_orders": completed,
         "orders_per_hour": orders_per_hour,
         "avg_cycle_time": avg_cycle,
         "cycle_times": cycle_times,
+        "order_completion_times": list(dispatcher.order_completion_times),
         "agv_utilization": agv_utilization,
         "agv_blocked_fraction": agv_blocked_fraction,
         "station_fill": station_fill,
         "picker_stats": env.pickers.stats(),
         "stuck_report": stuck_report,
+        "snapshots": snapshots,
         "sim_duration": env.sim_elapsed,
         "wall_clock_seconds": wall_elapsed,
         "total_ticks": total_ticks,
     }
+
+    if results_json:
+        import json
+        import os
+        os.makedirs(os.path.dirname(results_json) or ".", exist_ok=True)
+        metadata_keys = ("num_agvs", "num_carts", "seed", "strategies",
+                        "slotting", "sim_duration", "total_ticks",
+                        "wall_clock_seconds")
+        payload = {
+            "metadata": {k: result[k] for k in metadata_keys},
+            "summary": {
+                k: v for k, v in result.items()
+                if k not in metadata_keys
+                and k not in ("stuck_report", "snapshots")
+            },
+            "stuck_report": stuck_report,
+            "snapshots": snapshots,
+        }
+        with open(results_json, "w") as f:
+            json.dump(payload, f, indent=1)
+        logger.info("Per-run JSON written to %s", results_json)
+
+    return result

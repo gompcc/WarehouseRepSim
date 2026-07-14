@@ -41,7 +41,16 @@ logger = logging.getLogger(__name__)
 
 
 class EventLog:
-    """Structured event stream with counters; optionally mirrored to JSONL."""
+    """Structured event stream with counters; optionally mirrored to JSONL.
+
+    Counters always accumulate, but only anomaly events (``KEEP_IN_MEMORY``)
+    are retained in ``self.events`` — routine lifecycle events (cart_spawned,
+    cart_state, …) would grow to tens of MB over an 8h run and nothing reads
+    them back. Pass ``jsonl_path`` to capture the full stream on disk (which
+    also keeps everything in memory, matching what was written).
+    """
+
+    KEEP_IN_MEMORY = {"stuck", "teleport"}
 
     def __init__(self, jsonl_path: str | None = None) -> None:
         self.events: list[dict] = []
@@ -50,8 +59,9 @@ class EventLog:
 
     def record(self, t: float, kind: str, **fields) -> None:
         event = {"t": round(t, 1), "kind": kind, **fields}
-        self.events.append(event)
         self.counters[kind] += 1
+        if kind in self.KEEP_IN_MEMORY or self._jsonl:
+            self.events.append(event)
         if self._jsonl:
             self._jsonl.write(json.dumps(event) + "\n")
 
@@ -133,7 +143,7 @@ class Environment:
                 self.events.record(
                     self.sim_elapsed, "cart_spawned", cart=cart.cart_id, pos=spawn_pos,
                 )
-                logger.info(
+                logger.debug(
                     "[Env] Spawned Cart C%d at Box Depot %s (%d preload remaining)",
                     cart.cart_id, spawn_pos, max(0, self.preload_remaining - 1),
                 )

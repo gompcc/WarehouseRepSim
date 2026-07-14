@@ -22,10 +22,14 @@ COMMITTED through `3f27a16`. Tree was clean at handoff except `.claude/`.
   orders in SKU space before running Matrix A.
 
 ## Remaining task queue (mirrors the session task list #7–#15)
-- [ ] **Logging/storage revamp** — implement `tasks/logging-revamp-plan.md`
-      (EventLog memory filter, 60 s snapshots in headless returns, INFO→DEBUG,
-      per-run JSON; + order_completion_times & per-station picker stats in
-      run_headless returns for the experiments)
+- [x] **Logging/storage revamp** — DONE (2026-07-14): EventLog keeps only
+      stuck/teleport in memory (counters unaffected), `run_headless` gains
+      `snapshot_interval=60.0` → `"snapshots"` time series +
+      `results_json=` per-run JSON dump (`results/runs/`, gitignored),
+      18 dispatcher / 1 env / 1 picker INFO → DEBUG, returns now include
+      `order_completion_times` + `picker_stats["per_station"]`. Verified
+      behavior-identical (seed-42 1h: 24 orders / 1568.4s avg cycle, exact
+      match vs stashed pre-change code); 60 tests green.
 - [ ] **Placement visualization** — map colored by SKU popularity per
       slotting strategy (show the fibonacci rings around the track) + bar
       graph comparing avg picker walk time: sequential vs aisle-proximal vs
