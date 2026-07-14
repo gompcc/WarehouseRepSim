@@ -27,6 +27,7 @@ from .models import Cart
 from .agv import AGV
 from .map_builder import build_map, build_graph
 from .aisles import init_catalog
+from .layout import HighwayLayout, get_layout, set_layout
 from .picker import PickerManager
 from .constants import (
     PRELOAD_SPAWN_INTERVAL, AUTO_SPAWN_INTERVAL,
@@ -81,7 +82,14 @@ class Environment:
         event_jsonl: str | None = None,
         slotting: str = "sequential",
         picker_strategy: str = "static",
+        layout: HighwayLayout | None = None,
     ) -> None:
+        # Dynamic highway: an explicit layout is installed as the active
+        # geometry before anything is built; otherwise the current
+        # get_layout() singleton is used (default = the classic map).
+        if layout is not None:
+            set_layout(layout)
+        self.layout = get_layout()
         self.tiles = tiles if tiles is not None else build_map()
         self.graph = build_graph(self.tiles)
         # 2000-SKU aisle catalog (PRD §14); slotting picks the SKU placement

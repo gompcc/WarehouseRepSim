@@ -5,13 +5,7 @@ from __future__ import annotations
 import heapq
 
 from .enums import TileType
-from .constants import LEFT_HWY_COL, RIGHT_HWY_COL
-
-# Tiles immediately adjacent to highways can serve as overflow lanes
-_SIDETRACK_COLS = frozenset({
-    LEFT_HWY_COL - 1, LEFT_HWY_COL + 1,   # cols 8, 10
-    RIGHT_HWY_COL - 1, RIGHT_HWY_COL + 1,  # cols 37, 39
-})
+from .layout import get_layout
 
 
 def astar(
@@ -29,6 +23,10 @@ def astar(
     """
     if start not in graph or goal not in graph:
         return None
+
+    # Tiles immediately adjacent to the highway pillars serve as overflow
+    # lanes; the pillar columns are dynamic, so resolve once per search.
+    sidetrack_cols = get_layout().sidetrack_cols
 
     def h(node: tuple[int, int]) -> int:
         return abs(node[0] - goal[0]) + abs(node[1] - goal[1])
@@ -56,7 +54,7 @@ def astar(
                 tile = tiles.get(neighbor)
                 if tile and tile.tile_type == TileType.HIGHWAY:
                     edge_cost = 1
-                elif neighbor[0] in _SIDETRACK_COLS and tile and tile.tile_type == TileType.PARKING:
+                elif neighbor[0] in sidetrack_cols and tile and tile.tile_type == TileType.PARKING:
                     edge_cost = 2  # overflow lane adjacent to highway
                 else:
                     edge_cost = 10

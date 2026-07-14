@@ -23,6 +23,7 @@ from .constants import (
 )
 from .agv import AGV
 from .aisles import SLOTTING_STRATEGIES
+from .layout import get_layout, set_layout
 from .map_builder import verify_graph
 from .environment import Environment
 from .dispatcher import Dispatcher
@@ -91,6 +92,8 @@ def main() -> None:
     logger.info("Grid:      %dx%d  (%dpx tiles)", GRID_COLS, GRID_ROWS, TILE_SIZE)
     logger.info("Controls: A=spawn AGV, C=spawn Cart, P=pickup cart, R=return, TAB=cycle, Click=send, D=debug")
     logger.info("          Space=pause, T=auto-spawn, Up/Down=speed steps")
+    logger.info("          Drag a highway pillar column sideways to move it"
+                " (stations, aisles and products follow; world restarts)")
     logger.info("Press Q or close window to quit.")
     logger.info("Order stream seeded (%d) — comparable across sessions", GUI_ORDER_SEED)
     logger.info("Streaming %d AGVs via spawn tile; spawning %d carts at Box Depot",
@@ -110,6 +113,33 @@ def main() -> None:
     # Survives world restarts so strategies can be compared on one graph.
     picks_history: dict[str, list[tuple[float, float]]] = {}
     last_sample_t: float = 0.0
+
+    # Dynamic highway drag state: which pillar the mouse is over / dragging.
+    # Dragging rebuilds the world per column step (same reset semantics as
+    # the slotting toggle — a moved highway invalidates every live path).
+    hover_pillar: str | None = None
+    drag_pillar: str | None = None
+    drag_exported: bool = False
+    cursor_resize: bool = False
+    can_set_cursor = hasattr(pygame, "SYSTEM_CURSOR_SIZEWE")
+
+    def restart_world(new_slotting: str) -> None:
+        """Throw away the live world and rebuild it (same seed + fleet
+        target) under the current slotting and highway layout."""
+        nonlocal env, dispatcher, tiles, graph, agvs, carts, selected_agv
+        nonlocal strategy_events, agv_constraint_s, last_sample_t
+        spawn_enabled = env.spawn_enabled
+        env, dispatcher = _build_world(
+            new_slotting, dispatcher.strategies, env.pickers.strategy,
+            fleet_target,
+        )
+        env.spawn_enabled = spawn_enabled
+        tiles, graph = env.tiles, env.graph
+        agvs, carts = env.agvs, env.carts
+        selected_agv = None       # belonged to the old world
+        strategy_events = []      # markers use old-run sim times
+        agv_constraint_s = 0.0    # constraint clock restarts too
+        last_sample_t = 0.0
 
     running = True
     while running:
@@ -320,18 +350,7 @@ def main() -> None:
                         )
                     # re-running a strategy replaces its old curve
                     picks_history[new] = []
-                    spawn_enabled = env.spawn_enabled
-                    env, dispatcher = _build_world(
-                        new, dispatcher.strategies, env.pickers.strategy,
-                        fleet_target,
-                    )
-                    env.spawn_enabled = spawn_enabled
-                    tiles, graph = env.tiles, env.graph
-                    agvs, carts = env.agvs, env.carts
-                    selected_agv = None       # belonged to the old world
-                    strategy_events = []      # markers use old-run sim times
-                    agv_constraint_s = 0.0    # constraint clock restarts too
-                    last_sample_t = 0.0
+                    restart_world(new)
                     logger.info(
                         "[Slotting] %s -> %s — world restarted (seed %d, fleet %dA/%dC)",
                         old, new, GUI_ORDER_SEED, *fleet_target,
@@ -375,6 +394,21 @@ def main() -> None:
                     )
                     continue
                 if mx >= MAP_WIDTH:
+                    continue
+                # Grab a highway pillar (its column, rows 8-38) to drag it.
+                # Everything attached — stations, aisle lengths, product
+                # spread — follows live, one world rebuild per column step.
+                _gx, _gy = mx // TILE_SIZE, my // TILE_SIZE
+                _lay = get_layout()
+                if 8 <= _gy <= 38 and _gx in (_lay.left_col, _lay.right_col):
+                    drag_pillar = (
+                        "left" if _gx == _lay.left_col else "right"
+                    )
+                    drag_exported = False
+                    logger.info(
+                        "[Highway] Grabbed %s pillar (col %d) — drag "
+                        "horizontally, release to finish", drag_pillar, _gx,
+                    )
                     continue
                 # Click an S station (its tiles or racking block) → hire a
                 # picker there. Under the dynamic strategy the newcomer
@@ -434,6 +468,58 @@ def main() -> None:
                                         selected_agv.agv_id, clicked,
                                     )
 
+            elif event.type == pygame.MOUSEMOTION:
+                mx, my = event.pos
+                gx, gy = mx // TILE_SIZE, my // TILE_SIZE
+                if drag_pillar is not None:
+                    new_layout = get_layout().move_pillar(drag_pillar, gx)
+                    if new_layout != get_layout():
+                        if env.sim_elapsed > 0 and not drag_exported:
+                            # snapshot the run being abandoned, once per drag
+                            dispatcher.export_results(
+                                env.sim_elapsed, agvs, carts,
+                            )
+                            drag_exported = True
+                        set_layout(new_layout)
+                        restart_world(env.catalog.slotting)
+                        # old-layout curves aren't comparable — start fresh
+                        picks_history.clear()
+                        picks_history[env.catalog.slotting] = []
+                        logger.info(
+                            "[Highway] Pillars L=%d R=%d — world rebuilt",
+                            new_layout.left_col, new_layout.right_col,
+                        )
+                else:
+                    _lay = get_layout()
+                    if (
+                        mx < MAP_WIDTH and 8 <= gy <= 38
+                        and gx in (_lay.left_col, _lay.right_col)
+                    ):
+                        hover_pillar = (
+                            "left" if gx == _lay.left_col else "right"
+                        )
+                    else:
+                        hover_pillar = None
+
+            elif event.type == pygame.MOUSEBUTTONUP and event.button == 1:
+                if drag_pillar is not None:
+                    _lay = get_layout()
+                    logger.info(
+                        "[Highway] Released %s pillar — L=%d R=%d",
+                        drag_pillar, _lay.left_col, _lay.right_col,
+                    )
+                    drag_pillar = None
+
+        # Resize cursor over/while dragging a pillar (drag affordance)
+        if can_set_cursor:
+            want_resize = drag_pillar is not None or hover_pillar is not None
+            if want_resize != cursor_resize:
+                pygame.mouse.set_cursor(
+                    pygame.SYSTEM_CURSOR_SIZEWE if want_resize
+                    else pygame.SYSTEM_CURSOR_ARROW
+                )
+                cursor_resize = want_resize
+
         # Compute sim delta (zero when paused)
         sim_dt = dt * time_scale if not paused else 0.0
 
@@ -475,6 +561,8 @@ def main() -> None:
             strategy_events=strategy_events,
             pickers=env.pickers,
             picks_history=picks_history,
+            hover_pillar=hover_pillar,
+            drag_pillar=drag_pillar,
         )
         pygame.display.flip()
 

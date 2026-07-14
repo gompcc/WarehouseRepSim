@@ -237,27 +237,31 @@ def draw_labels(
 
     ts = TILE_SIZE
 
-    # Left-side station labels
-    label("S1", int(19.5 * ts + ts / 2), 12 * ts + ts // 2, font_md)
-    capacity_label("S1", int(19.5 * ts + ts / 2), 13 * ts + ts // 2)
-    label("S2", int(27.5 * ts + ts / 2), int(18 * ts + ts / 2), font_md)
-    capacity_label("S2", int(27.5 * ts + ts / 2), int(19 * ts + ts / 2))
-    label("S3", int(19.5 * ts + ts / 2), int(24 * ts + ts / 2), font_md)
-    capacity_label("S3", int(19.5 * ts + ts / 2), int(25 * ts + ts / 2))
-    label("S4", int(27.5 * ts + ts / 2), int(30 * ts + ts / 2), font_md)
-    capacity_label("S4", int(27.5 * ts + ts / 2), int(31 * ts + ts / 2))
-
-    # Right-side station labels
-    label("S5", 56 * ts + ts // 2, 35 * ts + ts // 2, font_md)
-    capacity_label("S5", 56 * ts + ts // 2, 36 * ts + ts // 2)
-    label("S6", 48 * ts + ts // 2, 29 * ts + ts // 2, font_md)
-    capacity_label("S6", 48 * ts + ts // 2, 30 * ts + ts // 2)
-    label("S7", 56 * ts + ts // 2, 23 * ts + ts // 2, font_md)
-    capacity_label("S7", 56 * ts + ts // 2, 24 * ts + ts // 2)
-    label("S8", 48 * ts + ts // 2, 17 * ts + ts // 2, font_md)
-    capacity_label("S8", 48 * ts + ts // 2, 18 * ts + ts // 2)
-    label("S9", 56 * ts + ts // 2, 11 * ts + ts // 2, font_md)
-    capacity_label("S9", 56 * ts + ts // 2, 12 * ts + ts // 2)
+    # S-station labels ride the highway pillars (dynamic layout): name and
+    # capacity centred on the station's racking block, plus the longest
+    # one-way pick walk a picker at that station can be sent on.
+    from .aisles import get_catalog
+    from .layout import get_layout
+    try:
+        longest_walk = get_catalog().longest_walk_m()
+    except Exception:
+        longest_walk = {}
+    for s in get_layout().stations:
+        cx = int((s.rack_x0 + s.rack_x1) / 2 * ts + ts / 2)
+        row = (s.y0 + s.y1) // 2
+        label(s.sid, cx, row * ts + ts // 2, font_md)
+        capacity_label(s.sid, cx, (row + 1) * ts + ts // 2)
+        walk = longest_walk.get(s.sid)
+        if walk is not None:
+            # Below the capacity line; drop one more row when the ETA
+            # forecast (drawn by capacity_label) occupies that spot.
+            dy = 2 if (eta_forecast and s.sid in eta_forecast) else 1
+            wtxt = font_sm.render(f"≤{walk:.0f}m", True, (90, 60, 160))
+            wr = wtxt.get_rect(center=(cx, (row + 1 + dy) * ts + ts // 2))
+            wbg = wr.inflate(6, 2)
+            pygame.draw.rect(surface, LABEL_BG, wbg)
+            pygame.draw.rect(surface, OUTLINE_COLOR, wbg, 1)
+            surface.blit(wtxt, wr)
 
     # Box Depot
     label("Box Depot", 33 * ts + ts // 2, int(2.5 * ts), font_md)
@@ -271,8 +275,60 @@ def draw_labels(
     label("South Pallets", 19 * ts, 36 * ts, font_sm, bg=False)
     label("North Pallets", 28 * ts, 36 * ts, font_sm, bg=False)
     label("North Highway", 49 * ts, NORTH_HWY_ROW * ts + ts // 2, font_sm, bg=False)
-    label("East Highway", 39 * ts, EAST_HWY_ROW * ts + ts // 2, font_sm, bg=False)
+    _lay = get_layout()
+    label(
+        "East Highway",
+        (_lay.left_col + _lay.right_col) // 2 * ts,
+        EAST_HWY_ROW * ts + ts // 2, font_sm, bg=False,
+    )
     label("AGV Spawn", 19 * ts, 3 * ts, font_sm)
+
+
+def draw_pillar_handles(
+    surface: pygame.Surface,
+    font: pygame.font.Font,
+    hover_pillar: str | None = None,
+    drag_pillar: str | None = None,
+) -> None:
+    """Drag affordance for the two movable highway pillars: a faint band
+    over each pillar column (rows 8-38), brighter on hover, brightest while
+    dragging — plus a grip marker and a live column readout during a drag.
+    Dragging a pillar horizontally moves the stations, aisle boundaries and
+    product distribution attached to it (world rebuilds per column step)."""
+    from .layout import get_layout
+    layout = get_layout()
+    top, bottom = 8, EAST_HWY_ROW
+    h = (bottom - top + 1) * TILE_SIZE
+    for name, col in (("left", layout.left_col), ("right", layout.right_col)):
+        if drag_pillar == name:
+            alpha = 90
+        elif drag_pillar is None and hover_pillar == name:
+            alpha = 60
+        else:
+            alpha = 22
+        band = pygame.Surface((TILE_SIZE, h), pygame.SRCALPHA)
+        band.fill((30, 90, 220, alpha))
+        surface.blit(band, (col * TILE_SIZE, top * TILE_SIZE))
+        active = drag_pillar == name or (
+            drag_pillar is None and hover_pillar == name
+        )
+        if not active:
+            continue
+        cx = col * TILE_SIZE + TILE_SIZE // 2
+        cy = ((top + bottom) // 2) * TILE_SIZE + TILE_SIZE // 2
+        grip = font.render("<->", True, (25, 60, 160))
+        r = grip.get_rect(center=(cx, cy))
+        bg = r.inflate(6, 4)
+        pygame.draw.rect(surface, LABEL_BG, bg)
+        pygame.draw.rect(surface, OUTLINE_COLOR, bg, 1)
+        surface.blit(grip, r)
+        if drag_pillar == name:
+            ctxt = font.render(f"col {col}", True, (25, 60, 160))
+            cr = ctxt.get_rect(center=(cx, cy + 18))
+            cbg = cr.inflate(6, 4)
+            pygame.draw.rect(surface, LABEL_BG, cbg)
+            pygame.draw.rect(surface, OUTLINE_COLOR, cbg, 1)
+            surface.blit(ctxt, cr)
 
 
 def draw_agv(surface: pygame.Surface, agv: AGV, font: pygame.font.Font) -> None:
@@ -759,6 +815,8 @@ def render(
     strategy_events: list[tuple[float, str]] | None = None,
     pickers=None,  # PickerManager | None — shadow-mode pickers (PRD §14.9)
     picks_history: dict[str, list[tuple[float, float]]] | None = None,
+    hover_pillar: str | None = None,
+    drag_pillar: str | None = None,
 ) -> dict[str, pygame.Rect]:
     """Full frame render; returns clickable strategy-toggle hitboxes."""
     screen.fill(BG_COLOR)
@@ -816,6 +874,11 @@ def render(
         screen, font_sm, font_md,
         station_fill=station_fill, eta_forecast=eta_forecast,
         picker_counts=picker_counts,
+    )
+
+    # Movable-pillar drag affordance (dynamic highway)
+    draw_pillar_handles(
+        screen, font_sm, hover_pillar=hover_pillar, drag_pillar=drag_pillar,
     )
 
     if carts:

@@ -49,8 +49,9 @@ from dataclasses import dataclass
 from .enums import TileType
 from .constants import (
     NUM_SKUS, METERS_PER_TILE, RACK_LEVELS, PICKER_WALK_SPEED,
-    LEFT_HWY_COL, RIGHT_HWY_COL, NORTH_HWY_ROW, EAST_HWY_ROW,
+    NORTH_HWY_ROW, EAST_HWY_ROW,
 )
+from .layout import Bank, HighwayLayout, get_layout  # noqa: F401 (Bank re-export)
 
 logger = logging.getLogger(__name__)
 
@@ -76,20 +77,8 @@ def walk_time_seconds(one_way_m: float) -> float:
     return WALK_TIME_FIXED + (2.0 * one_way_m / PICKER_WALK_SPEED) * WALK_TIME_SCALE
 
 
-@dataclass(frozen=True)
-class Bank:
-    name: str
-    col_start: int   # first racking column (inclusive)
-    col_end: int     # last racking column (inclusive)
-    run_rows: tuple[int, ...]  # rows containing a racking run, top to bottom
-
-
-# Geometry per PRD 14.3 (coordinates are post-expansion grid columns/rows)
-BANKS: tuple[Bank, ...] = (
-    Bank("west", 0, 12, (10, 13, 16, 19, 22, 25, 28, 31, 34, 37)),
-    Bank("central", 31, 45, (12, 15, 18, 21, 24, 27, 30, 33)),
-    Bank("east", 60, 84, (10, 13, 16, 19, 22, 25, 28, 31, 34, 37)),
-)
+# Bank geometry (PRD 14.3) now lives on HighwayLayout — the bank boundary
+# facing each pillar moves with it (layout.py). ``Bank`` is re-exported above.
 
 
 @dataclass(frozen=True)
@@ -127,8 +116,9 @@ def sku_weight(sku: int) -> float:
 
 def _ring_distance(x: float, y: float) -> float:
     """Distance (tiles) from a point to the one-way highway ring."""
+    layout = get_layout()
     return min(
-        abs(x - LEFT_HWY_COL), abs(x - RIGHT_HWY_COL),
+        abs(x - layout.left_col), abs(x - layout.right_col),
         abs(y - NORTH_HWY_ROW), abs(y - EAST_HWY_ROW),
     )
 
@@ -153,8 +143,13 @@ class Catalog:
                 f"unknown slotting {slotting!r}; pick one of {SLOTTING_STRATEGIES}"
             )
         self.slotting = slotting
+        # Snapshot the active highway layout: banks and side boundaries are
+        # frozen into this catalog, so a later set_layout() can't skew a
+        # live world — the new geometry only exists after a rebuild.
+        self.layout: HighwayLayout = get_layout()
+        self.banks: tuple[Bank, ...] = self.layout.banks
         self.station_pos = _station_centroids(tiles)
-        self.locations: list[Location] = _layout_locations()
+        self.locations: list[Location] = _layout_locations(self.banks)
 
         # Geometric zoning: each location belongs to the station with the
         # shortest walk ON ITS OWN SIDE. Pickers cannot cross the one-way
@@ -162,9 +157,9 @@ class Catalog:
         # the bank on its side: west of the left highway / between the
         # highways / east of the right highway. Bank names match sides.
         def _station_side(sx: float) -> str:
-            if sx < LEFT_HWY_COL:
+            if sx < self.layout.left_col:
                 return "west"
-            if sx > RIGHT_HWY_COL:
+            if sx > self.layout.right_col:
                 return "east"
             return "central"
 
@@ -221,7 +216,7 @@ class Catalog:
     def _walk_distance_to(
         self, station_id: str, x: float, walkway_row: float, bank_name: str,
     ) -> float:
-        bank = next(b for b in BANKS if b.name == bank_name)
+        bank = next(b for b in self.banks if b.name == bank_name)
         sx, sy = self.station_pos[station_id]
         best = float("inf")
         for end_x in (bank.col_start - 0.5, bank.col_end + 0.5):
@@ -235,7 +230,7 @@ class Catalog:
         """Waypoints (tile units) from the station to the slot, entering the
         walkway at its nearer end. Used for distance and picker animation."""
         slot = self.slots[sku]
-        bank = next(b for b in BANKS if b.name == slot.bank)
+        bank = next(b for b in self.banks if b.name == slot.bank)
         sx, sy = self.station_pos[station_id]
         wy = slot.walkway_row
         best: list[tuple[float, float]] | None = None
@@ -302,7 +297,7 @@ class Catalog:
                 faces.setdefault(key, {})[loc.x] = self._loc_station[loc.index]
             segments: list[tuple[str, int, str, float, float, str]] = []
             for (bank, run_row, face), by_x in faces.items():
-                b = next(bk for bk in BANKS if bk.name == bank)
+                b = next(bk for bk in self.banks if bk.name == bank)
                 xs = sorted(by_x)
                 pitch = xs[1] - xs[0] if len(xs) > 1 else 1.0
                 seg_start = max(xs[0] - pitch / 2, float(b.col_start))
@@ -327,6 +322,21 @@ class Catalog:
             total_w += w
             total_d += w * self.walk_distance(slot.station, sku)
         return total_d / total_w if total_w else 0.0
+
+    def longest_walk_m(self) -> dict[str, float]:
+        """Worst-case one-way pick walk (metres) per station: the farthest
+        slot in each station's zone. Deterministic per layout+zoning (does
+        not depend on slotting — the zone's farthest LOCATION sets it, and
+        zoning is geometric). Shown on the map next to each station."""
+        if not hasattr(self, "_longest_walk"):
+            self._longest_walk = {
+                sid: max(
+                    (self.walk_distance(sid, sku) for sku in skus),
+                    default=0.0,
+                )
+                for sid, skus in self.station_skus.items()
+            }
+        return self._longest_walk
 
     def calibration_stats(self) -> dict:
         """Distribution of calibrated round-trip walk times per pick over
@@ -368,15 +378,17 @@ def _station_centroids(tiles: dict) -> dict[str, tuple[float, float]]:
     }
 
 
-def _layout_locations() -> list[Location]:
+def _layout_locations(banks: tuple[Bank, ...]) -> list[Location]:
     """Lay out exactly NUM_SKUS locations across all active faces and levels.
 
     All (face, level) strips are concatenated into one line; location centres
     are placed uniformly along it, then mapped back to their strip. This
-    yields exactly NUM_SKUS locations with a uniform derived slot width.
+    yields exactly NUM_SKUS locations with a uniform derived slot width —
+    so when a pillar move lengthens one side's aisles, that side gains
+    locations (and the other side loses them) at unchanged density.
     """
     strips: list[tuple[Bank, int, str, int, float, int]] = []
-    for bank in BANKS:
+    for bank in banks:
         run_len = (bank.col_end - bank.col_start + 1) * METERS_PER_TILE
         rows = bank.run_rows
         for i, row in enumerate(rows):
@@ -490,9 +502,10 @@ def get_catalog() -> Catalog:
 
 
 def aisle_rack_positions() -> list[tuple[int, int]]:
-    """All (x, y) tiles occupied by racking runs (for map building/drawing)."""
+    """All (x, y) tiles occupied by racking runs (for map building/drawing),
+    per the ACTIVE highway layout."""
     positions: list[tuple[int, int]] = []
-    for bank in BANKS:
+    for bank in get_layout().banks:
         for row in bank.run_rows:
             for x in range(bank.col_start, bank.col_end + 1):
                 positions.append((x, row))

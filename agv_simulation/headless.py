@@ -16,6 +16,7 @@ from .models import Cart, Order, Job, set_order_seed, set_order_book
 from .agv import AGV
 from .environment import Environment
 from .dispatcher import Dispatcher
+from .layout import HighwayLayout
 from .strategies import StrategyConfig
 
 logger = logging.getLogger(__name__)
@@ -46,6 +47,7 @@ def run_headless(
     order_book: bool = True,
     snapshot_interval: float = 60.0,
     results_json: str | None = None,
+    highway: tuple[int, int] | None = None,
 ) -> dict:
     """Run the simulation without pygame, using a fixed timestep.
 
@@ -88,9 +90,14 @@ def run_headless(
         strategies = StrategyConfig(**strategies)
     wall_start = _time.monotonic()
 
+    # Dynamic highway: install the requested pillar columns, or reset to
+    # the default so a moved layout can't leak between runs in one process
+    # (sweeps call run_headless repeatedly).
+    layout = HighwayLayout(*highway) if highway else HighwayLayout()
+
     env = Environment(
         event_jsonl=event_jsonl, slotting=slotting,
-        picker_strategy=picker_strategy,
+        picker_strategy=picker_strategy, layout=layout,
     )
     env.agv_preload_remaining = num_agvs
     env.preload_remaining = num_carts
@@ -189,6 +196,7 @@ def run_headless(
         "strategies": dispatcher.strategies.active_names(),
         "slotting": slotting,
         "picker_strategy": picker_strategy,
+        "highway": (layout.left_col, layout.right_col),
         "order_book": order_book,
         "completed_orders": completed,
         "orders_per_hour": orders_per_hour,
