@@ -187,7 +187,11 @@ def build_graph(
 
     # Junction special cases
     junctions: dict[tuple[int, int], list[tuple[int, int]]] = {
-        (9, 7):   [(0, 1), (-1, 0)],
+        # (9,7) must NOT flow west into (8,7): row 7 cols 1-8 flows east into
+        # (9,7), so a westbound edge creates a head-on deadlock 2-cycle at the
+        # only connector between the NW corridor and the loop. Spawn-area
+        # access is via (9,8) → row 8 → merge north instead.
+        (9, 7):   [(0, 1)],
         (9, 8):   [(0, 1), (-1, 0)],
         (9, 38):  [(1, 0)],
         (38, 38): [(0, -1)],
@@ -203,7 +207,10 @@ def build_graph(
         if y == 7 and 1 <= x <= 8:
             return [(1, 0)]
         if y == 8 and 1 <= x <= 8:
-            return [(-1, 0)]
+            # Westbound return lane may merge north into the eastbound lane
+            # (and from there sidetrack into the spawn area). Without the
+            # merge, (1,8) is a dead-end trap with no outgoing edges.
+            return [(-1, 0), (0, -1)]
         if y == 7 and 10 <= x <= 57:
             dirs = [(-1, 0)]
             if 15 <= x <= 22:
