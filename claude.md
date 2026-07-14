@@ -83,7 +83,7 @@ for k, v in result.items():
 - Results are auto-appended to `results/sim_results.md` on completion.
 - Override any arg: `run_headless(num_agvs=8, num_carts=20, sim_duration=3600, tick_dt=0.1)`.
 - **Spawn model (policy-fair)**: carts enter the world AT the Box Depot — 8 tiles fill at t=0, then one cart per 5 sim-s into any depot tile that is free and not targeted by an in-flight job, until `num_carts` have entered. AGVs stream in single-file through the spawn tile (next spawns only when the previous has driven off). Identical in GUI and headless, so results are directly comparable. There is no cart-spawn tile anymore.
-- **Controlled experiments**: pass `seed=42` for a deterministic order stream (order N is identical across runs/policies — required for fair A/B), and `strategies={'eta_reservations': True, 'global_assignment': True, 'order_sequencing': True}` (any subset) to enable dispatch strategy modules (`agv_simulation/strategies/`). All off = exact baseline. GUI has the same toggles as clickable switches (seeded 42 by default).
+- **Controlled experiments**: pass `seed=42` for a deterministic order stream (order N is identical across runs/policies — required for fair A/B), and `strategies={'eta_reservations': True, 'global_assignment': True}` (any subset) to enable dispatch strategy modules (`agv_simulation/strategies/`). All off = baseline. GUI has the same toggles as clickable switches (seeded 42 by default). Travel-window sequencing over true directed distances (reverse-BFS `DistanceMap`) is NOT a toggle — it's baked into the baseline dispatcher (`_travel_window`, `TRAVEL_WINDOW=3`).
 
 ### Strategy A/B comparison
 ```bash
