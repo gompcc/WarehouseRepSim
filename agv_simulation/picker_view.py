@@ -11,12 +11,11 @@ from typing import TYPE_CHECKING
 import pygame
 
 from .constants import (
-    TILE_SIZE, PICKER_WALK_SPEED, PICK_GRAB_TIME,
+    TILE_SIZE, PICKER_WALK_SPEED,
     LABEL_BG, OUTLINE_COLOR,
 )
-from .aisles import get_catalog
+from .models import Order
 from .picker import Picker
-from .constants import ORDER_LINES_MEAN, ORDER_LINES_SD
 
 if TYPE_CHECKING:
     from .picker import PickerManager
@@ -49,20 +48,39 @@ def draw_picker_info(
     x: int = 6,
     y: int = 6,
 ) -> None:
-    """Assumptions + live shadow stats, in the empty corner above the west bank."""
-    calib = get_catalog().calibration_stats()
+    """Live picker stats (updated every frame), corner above the west bank.
+
+    Both distribution lines are LIVE, computed from the run so far — the
+    pick-cycle stats from picks the orders actually demanded (the order
+    decides which slot each picker walks to), the lines/order stats from
+    every order created so far. No static calibration set pieces."""
     live = manager.stats()
+    sizes = Order.sizes
+    if sizes:
+        lo_mean = sum(sizes) / len(sizes)
+        lo_var = sum((s - lo_mean) ** 2 for s in sizes) / len(sizes)
+        lines_order = (
+            f"lines/order so far: μ{lo_mean:.1f} σ{lo_var ** 0.5:.1f}"
+            f" ({len(sizes)} orders)"
+        )
+    else:
+        lines_order = "lines/order so far: — (no orders yet)"
+    if live["picks_done"]:
+        pick_cycle = (
+            f"pick cycle so far: μ{live['walk_mean_s']:.1f}s"
+            f" σ{live['walk_sd_s']:.1f}s ({live['picks_done']} picks)"
+        )
+    else:
+        pick_cycle = "pick cycle so far: — (no picks yet)"
     lines = [
         f"PICKERS ({manager.strategy}"
         f"{', gating' if manager.gating else ', shadow'})",
         f"{len(manager.all_pickers())} pickers (click a station to add)"
-        f" · {PICKER_WALK_SPEED} m/s · grab {PICK_GRAB_TIME:.0f}s",
-        f"lines/order: μ{ORDER_LINES_MEAN:.0f} σ{ORDER_LINES_SD:.0f}",
-        f"walk/pick: μ{calib['mean_s']:.0f}s σ{calib['sd_s']:.0f}"
-        f" (near {calib['near_p16_s']:.0f} / far {calib['far_p84_s']:.0f})",
-        f"live: {live['picks_done']} picks"
-        f" · μ{live['walk_mean_s']:.0f}s · busy {live['busy_fraction']:.0%}",
-        f"carts: {live['carts_served']} done"
+        f" · {PICKER_WALK_SPEED} m/s",
+        lines_order,
+        pick_cycle,
+        f"busy {live['busy_fraction']:.0%}"
+        f" · carts: {live['carts_served']} done"
         f" · {live['carts_left_early']} left early",
     ]
     rendered = [font.render(t, True, _TEXT) for t in lines]

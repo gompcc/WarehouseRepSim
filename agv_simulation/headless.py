@@ -26,6 +26,7 @@ def _reset_id_counters() -> None:
     AGV._next_id = 1
     Cart._next_id = 1
     Order._next_id = 1
+    Order.sizes = []
     Job._next_id = 1
 
 

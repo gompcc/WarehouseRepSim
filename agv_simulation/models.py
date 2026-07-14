@@ -92,6 +92,9 @@ class Order:
     """
 
     _next_id: int = 1
+    # Sizes of every order created this run (live lines/order stats in the
+    # GUI); reset with the ID counters at world build.
+    sizes: list[int] = []
 
     def __init__(self) -> None:
         self.order_id: int = Order._next_id
@@ -122,6 +125,7 @@ class Order:
             self.skus_by_station.setdefault(num, []).append(sku)
             self.lines.append(sku)
 
+        Order.sizes.append(len(self.lines))
         self.stations_to_visit: list[int] = sorted(self.skus_by_station)
         self.completed_stations: list[int] = []
         self.picked_skus: set[int] = set()

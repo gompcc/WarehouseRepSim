@@ -87,7 +87,9 @@ METERS_PER_TILE     = 1.0    # walking scale: 1 tile = 1 metre
 RACK_LEVELS         = 2      # bi-level racking
 PICKERS_PER_STATION = 1      # human pickers serving each S station
 PICKER_WALK_SPEED   = 1.4    # m/s
-PICK_GRAB_TIME      = 10.0   # seconds to locate/grab one SKU line at the slot
+PICK_GRAB_TIME      = 0.0    # grab is folded into the calibrated pick-cycle
+                             # time (aisles.walk_time_seconds, mean 30 s) —
+                             # user spec 2026-07-14: no separate grab constant
 PICKS_PER_VISIT_MEAN = 4.0   # shadow-mode fallback: lines sampled for a cart…
 PICKS_PER_VISIT_SD   = 2.0   # …without an order (GUI-spawned), max(1, round(N))
 ORDER_LINES_MEAN     = 20.0  # lines per order: max(1, round(N(mean, sd))),

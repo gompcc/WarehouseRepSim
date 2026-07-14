@@ -57,18 +57,22 @@ logger = logging.getLogger(__name__)
 SLOTTING_STRATEGIES = ("sequential", "aisle_proximal", "fibonacci")
 
 # ----------------------------------------------------------------------
-# Walk-time calibration (user spec, 2026-07-14): fitted ONCE against the
-# sequential layout so the round-trip walking time per pick has mean 30 s
-# and sd 10 s ("near" ~20 s, "far" ~40 s). FROZEN across slotting
-# strategies — placement experiments measure walking deltas, so re-fitting
-# per strategy would erase the effect being studied.
+# Pick-cycle calibration (user spec, 2026-07-14, re-specified same day):
+# the TOTAL cycle time of a pick — leave cart, walk, grab, walk back —
+# has mean 30 s and sd 10 s over the side-constrained geometry (no
+# separate grab constant; handling is folded into the fixed term).
+# Refit 2026-07-14 evening after side-constrained zoning + S5's 4th slot.
+# FROZEN across slotting strategies — placement experiments measure
+# walking deltas, so re-fitting per strategy would erase the effect
+# being studied.
 # ----------------------------------------------------------------------
-WALK_TIME_FIXED = 2.93   # s per pick: leaving/re-approaching the cart
-WALK_TIME_SCALE = 1.0330  # stretch on the pure distance/speed time
+WALK_TIME_FIXED = 2.9244  # s per pick: fixed handling at cart + slot
+WALK_TIME_SCALE = 0.9872  # stretch on the pure distance/speed time
 
 
 def walk_time_seconds(one_way_m: float) -> float:
-    """Calibrated round-trip walking time for a pick at *one_way_m* metres."""
+    """Calibrated TOTAL pick-cycle time for a slot *one_way_m* metres out
+    (round-trip walking + handling; mean 30 s, sd 10 s on the baseline)."""
     return WALK_TIME_FIXED + (2.0 * one_way_m / PICKER_WALK_SPEED) * WALK_TIME_SCALE
 
 

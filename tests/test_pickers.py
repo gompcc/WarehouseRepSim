@@ -21,17 +21,15 @@ def _s1_tile(tiles):
 
 
 def test_walk_time_calibration_targets():
-    """User spec: mean 30 s, sd 10 s round trip; near ~20 s, far ~40 s.
-
-    The constants were fitted BEFORE the side-constrained zoning (pickers
-    can't cross the highway, 2026-07-14) and are FROZEN by rule — the
-    constraint lengthens walks slightly, so the realized mean sits ~31 s.
-    This test documents that frozen-constants reality; do not refit."""
+    """User spec (2026-07-14, re-specified same day): the TOTAL pick-cycle
+    time — walk out, grab, walk back, no separate grab constant — has
+    mean 30 s and sd 10 s over the side-constrained geometry. Refit once
+    (FIXED=2.9244, SCALE=0.9872) and FROZEN; do not refit per strategy."""
     tiles = _setup()
     from agv_simulation.aisles import get_catalog
     calib = get_catalog().calibration_stats()
-    assert abs(calib["mean_s"] - 31.2) < 0.5, calib
-    assert abs(calib["sd_s"] - 10.4) < 1.0, calib
+    assert abs(calib["mean_s"] - 30.0) < 0.5, calib
+    assert abs(calib["sd_s"] - 10.0) < 1.0, calib
     assert 17.0 <= calib["near_p16_s"] <= 23.0, calib
     assert 37.0 <= calib["far_p84_s"] <= 45.0, calib
 

@@ -145,8 +145,13 @@ class Picker:
 
         if self.state == Picker.WALK_OUT and self.timer >= self.leg_time:
             self.timer = 0.0
-            self.state = Picker.GRAB
             self.pos = self.path[-1]
+            if PICK_GRAB_TIME > 0:
+                self.state = Picker.GRAB
+            else:
+                # Grab folded into the calibrated cycle — turn around now
+                self.state = Picker.WALK_BACK
+                self.path = list(reversed(self.path))
         elif self.state == Picker.GRAB and self.timer >= PICK_GRAB_TIME:
             self.timer = 0.0
             self.state = Picker.WALK_BACK
