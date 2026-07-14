@@ -19,9 +19,28 @@ import logging
 from dataclasses import dataclass, replace
 
 from .enums import TileType
-from .constants import NUM_SKUS, METERS_PER_TILE, RACK_LEVELS
+from .constants import (
+    NUM_SKUS, METERS_PER_TILE, RACK_LEVELS, PICKER_WALK_SPEED,
+)
 
 logger = logging.getLogger(__name__)
+
+# ----------------------------------------------------------------------
+# Walk-time calibration (user spec, 2026-07-14): the round-trip walking
+# time per pick, over all (station, zoned SKU) pairs, must have mean 30 s
+# and sd 10 s — "near" picks ~20 s, "far" ~40 s. The raw geometry gives
+# mean 26.2 s / sd 9.7 s at 1.4 m/s; the affine fit below maps it to the
+# target exactly (measured p16 = 19.7 s, p84 = 41.3 s — matching the
+# near-20 / far-40 intent). Re-derive with calibration_stats() if the
+# bank geometry ever changes.
+# ----------------------------------------------------------------------
+WALK_TIME_FIXED = 2.93   # s per pick: leaving/re-approaching the cart
+WALK_TIME_SCALE = 1.0330  # stretch on the pure distance/speed time
+
+
+def walk_time_seconds(one_way_m: float) -> float:
+    """Calibrated round-trip walking time for a pick at *one_way_m* metres."""
+    return WALK_TIME_FIXED + (2.0 * one_way_m / PICKER_WALK_SPEED) * WALK_TIME_SCALE
 
 
 @dataclass(frozen=True)
@@ -100,6 +119,29 @@ class Catalog:
         for (x1, y1), (x2, y2) in zip(path, path[1:]):
             d += abs(x2 - x1) + abs(y2 - y1)
         return d * METERS_PER_TILE
+
+    def calibration_stats(self) -> dict:
+        """Distribution of calibrated round-trip walk times per pick over
+        every (station, zoned SKU) pair. Cached; used by the GUI and tests."""
+        if not hasattr(self, "_calib"):
+            times = sorted(
+                walk_time_seconds(self.walk_distance(sid, sku))
+                for sid, skus in self.station_skus.items()
+                for sku in skus
+            )
+            n = len(times)
+            mean = sum(times) / n
+            var = sum((t - mean) ** 2 for t in times) / (n - 1)
+            self._calib = {
+                "mean_s": mean,
+                "sd_s": var ** 0.5,
+                "near_p16_s": times[16 * n // 100],
+                "mid_p50_s": times[n // 2],
+                "far_p84_s": times[84 * n // 100],
+                "min_s": times[0],
+                "max_s": times[-1],
+            }
+        return self._calib
 
 
 def _station_centroids(tiles: dict) -> dict[str, tuple[float, float]]:

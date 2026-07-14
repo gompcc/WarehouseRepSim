@@ -27,6 +27,7 @@ from .models import Cart
 from .agv import AGV
 from .map_builder import build_map, build_graph
 from .aisles import init_catalog
+from .picker import PickerManager
 from .constants import (
     CART_SPAWN_TILES, PRELOAD_SPAWN_INTERVAL, AUTO_SPAWN_INTERVAL,
     STUCK_WARN_SECONDS, DEFAULT_AGV_SPOTS,
@@ -71,6 +72,7 @@ class Environment:
         self.tiles = tiles if tiles is not None else build_map()
         self.graph = build_graph(self.tiles)
         self.catalog = init_catalog(self.tiles)  # 2000-SKU aisle catalog (PRD §14)
+        self.pickers = PickerManager(self.tiles)  # shadow-mode pickers (PRD §14.9)
         self.agvs: list[AGV] = []
         self.carts: list[Cart] = []
         self.sim_elapsed: float = 0.0
@@ -159,6 +161,7 @@ class Environment:
             agv.update(dt, self.agvs, self.carts, self.graph, self.tiles)
         for cart in self.carts:
             cart.update(dt)
+        self.pickers.update(dt, self.carts)
         self.sim_elapsed += dt
 
     def audit(self, dt: float) -> None:

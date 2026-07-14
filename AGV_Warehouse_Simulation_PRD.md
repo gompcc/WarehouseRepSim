@@ -1785,6 +1785,27 @@ RACK_LEVELS         = 2
 # PICK_TIME_PER_ITEM (90s) is REMOVED — dwell time is now emergent.
 ```
 
+### 14.8a Shadow-Mode Pickers & Calibration (implemented 2026-07-14)
+
+Stage 3 was split. The picker *engine* is live in **shadow mode**
+(`agv_simulation/picker.py`), fully independent of the dispatcher: pickers
+react to carts in `PICKING` state, walk their picks in the aisles, and record
+stats — but cart departure is still governed by `PICK_TIME_PER_ITEM`. The
+future integration seam is a single condition: the dispatcher's PICKING
+branch waits on `PickerManager.cart_done(cart)`, plus SKU-based orders.
+
+Calibration (user spec): per pick, round-trip **walking time μ 30 s σ 10 s**
+(near ≈ 20 s, far ≈ 40 s); **picks per cart-visit μ 4 σ 2** (min 1, sampled
+`N(4,2)` in shadow mode until orders carry SKUs). Implemented as
+`walk_time = WALK_TIME_FIXED (2.93 s) + (2·d / 1.4 m/s) × WALK_TIME_SCALE
+(1.0330)` in `aisles.py`, giving measured μ 30.0 / σ 10.0 / p16 19.7 /
+p84 41.3 over all (station, zoned-SKU) pairs. GUI shows the assumptions +
+live stats in a box above the west bank, and pickers as walking dots.
+
+Shadow finding: with the flat 90 s/item dwell, ~⅔ of carts leave the station
+before their calibrated picks would finish (~4 picks × ~40 s ≈ 160 s needed).
+Binding the release rule will roughly double station dwell.
+
 ### 14.8 New Metrics
 
 Per station and fleet-wide, exported in headless results and the GUI panel:
