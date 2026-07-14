@@ -85,6 +85,13 @@ Multi-session warning: another Claude session may share this working tree
 and branch — check `git status` for foreign changes before editing/committing;
 stage only files whose diff is yours (see memory: concurrent-sessions-same-worktree).
 
+⚠️ SESSION OWNERSHIP (2026-07-14 evening, per user): **slotting strategies
+are owned by another session** — this session must not edit the slotting
+assignment code (`aisles.py` `_assign_*` / SLOTTING_STRATEGIES surface) or
+slotting-specific docs/figures while that work is in flight. This session
+owns pickers/dispatcher/GUI. Headless experiment runs are ON HOLD until
+the user says go (applies to both sessions' sweeps).
+
 ---
 
 # Toggleable Dispatch Strategy Modules (2026-07-14)
