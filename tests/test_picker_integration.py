@@ -49,13 +49,13 @@ def test_orders_are_sku_based_and_zone_consistent():
             for sku in skus:
                 # Every SKU must genuinely belong to that station's zone
                 assert cat.slots[sku].station == f"S{num}"
-    totals = [len(o.picks) for o in orders]
+    totals = [len(o.lines) for o in orders]
     mean = sum(totals) / len(totals)
     assert 18.0 < mean < 22.0, mean  # target μ20 σ9, min 1
     var = sum((t - mean) ** 2 for t in totals) / len(totals)
     assert 7.0 < var ** 0.5 < 11.0, var ** 0.5  # sd ≈ 9
     for o in orders:
-        assert len(set(o.picks)) == len(o.picks)  # distinct SKU lines
+        assert len(set(o.lines)) == len(o.lines)  # distinct SKU lines
 
 
 def test_release_rule_holds_cart_until_picked():
@@ -76,7 +76,7 @@ def test_release_rule_holds_cart_until_picked():
     assert 1 not in cart.order.completed_stations
 
     # While the picker works, the dispatcher must not create onward jobs
-    lines = cart.order.items_at_station(1)
+    lines = cart.order.lines_at_station(1)
     manager.update(0.1, [cart])  # queue + assign
     dispatcher._create_jobs([cart], [], graph, tiles)
     assert dispatcher.pending_jobs == []
@@ -88,7 +88,7 @@ def test_release_rule_holds_cart_until_picked():
         if dispatcher._picking_done(cart):
             break
     assert dispatcher._picking_done(cart)
-    assert cart.order.skus_remaining_at(1) == []
+    assert cart.order.lines_remaining_at(1) == []
     assert 1 in cart.order.completed_stations
     assert manager.picks_done == lines
 
@@ -118,13 +118,13 @@ def test_buffered_cart_resumes_remaining_lines():
     assert 1 not in cart.order.completed_stations  # incomplete: must resume
 
     # Cart returns — picker must do ONLY the remaining lines, no re-picks
-    remaining_before = set(cart.order.skus_remaining_at(1))
+    remaining_before = set(cart.order.lines_remaining_at(1))
     cart.state = CartState.PICKING
     for _ in range(20000):
         manager.update(0.1, [cart])
-        if not cart.order.skus_remaining_at(1):
+        if not cart.order.lines_remaining_at(1):
             break
-    assert cart.order.skus_remaining_at(1) == []
+    assert cart.order.lines_remaining_at(1) == []
     assert 1 in cart.order.completed_stations
     assert manager.picks_done == 1 + len(remaining_before)
     assert picked_before <= cart.order.picked_skus
@@ -160,7 +160,7 @@ def test_served_cart_lingering_in_picking_stays_released():
     cart.state = CartState.PICKING
     for _ in range(20000):
         manager.update(0.1, [cart])
-        if not cart.order.skus_remaining_at(1):
+        if not cart.order.lines_remaining_at(1):
             break
     assert manager.cart_done(cart)
 

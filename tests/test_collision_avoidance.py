@@ -510,7 +510,7 @@ def test_packoff_capacity_check_uses_physical_occupancy():
     waiting.order = Order()
     waiting.order.stations_to_visit = []
     waiting.order.completed_stations = []
-    waiting.order.picks = []
+    waiting.order.lines = []
     carts.append(waiting)
     dispatcher._create_jobs(carts, [], graph, tiles)
     # No MOVE_TO_PACKOFF job should be created (pack-off physically full)

@@ -66,14 +66,17 @@ def set_order_seed(seed: int | None) -> None:
 
 
 class Order:
-    """A picking order: SKU lines grouped by the station that owns each SKU.
+    """A picking order: 1 or many lines, grouped by owning station.
 
-    An order is ``max(1, round(N(20, 9)))`` distinct products, sampled
-    popularity-weighted in SKU space — demand is independent of slot
-    placement, so every slotting strategy faces the identical order stream
-    (EXPERIMENT_DESIGN.md fairness rule). ``stations_to_visit`` is derived
-    from where the catalog places each sampled SKU. ``picks`` is the flat
-    SKU-id list; pickers mark lines done via :meth:`mark_picked`.
+    Glossary (canonical, user-defined): a **line** is a SKU which is part
+    of an order, no matter the quantity; a line is the same as a **pick**
+    (one picker round trip picks one line). An order consists of
+    ``max(1, round(N(20, 9)))`` distinct lines, sampled popularity-weighted
+    in SKU space — demand is independent of slot placement, so every
+    slotting strategy faces the identical order stream (EXPERIMENT_DESIGN.md
+    fairness rule). ``stations_to_visit`` is derived from where the catalog
+    places each sampled SKU. ``lines`` is the flat SKU-id list; pickers
+    mark lines done via :meth:`mark_picked`.
     """
 
     _next_id: int = 1
@@ -90,33 +93,33 @@ class Order:
         catalog = get_catalog()
         n_lines = max(1, round(rng.gauss(ORDER_LINES_MEAN, ORDER_LINES_SD)))
 
-        self.picks: list[int] = []                     # flat SKU ids
+        self.lines: list[int] = []                     # flat SKU ids, one per line
         self.skus_by_station: dict[int, list[int]] = {}
         # Popularity-weighted: hot SKUs (low ids) appear in many orders,
         # which is what makes slotting strategies matter.
         for sku in catalog.sample_skus(n_lines, rng):
             num = int(catalog.station_of(sku)[1:])
             self.skus_by_station.setdefault(num, []).append(sku)
-            self.picks.append(sku)
+            self.lines.append(sku)
 
         self.stations_to_visit: list[int] = sorted(self.skus_by_station)
         self.completed_stations: list[int] = []
         self.picked_skus: set[int] = set()
         self.packed: bool = False  # True once the cart has reached Pack-off
 
-    def items_at_station(self, station_num: int) -> int:
-        """Return the number of SKU lines to pick at *station_num*."""
+    def lines_at_station(self, station_num: int) -> int:
+        """Return the number of lines to pick at *station_num*."""
         return len(self.skus_by_station.get(station_num, []))
 
-    def skus_remaining_at(self, station_num: int) -> list[int]:
-        """Unpicked SKU lines at *station_num* (drives picker work + release)."""
+    def lines_remaining_at(self, station_num: int) -> list[int]:
+        """Unpicked lines at *station_num* (drives picker work + release)."""
         return [
             s for s in self.skus_by_station.get(station_num, [])
             if s not in self.picked_skus
         ]
 
     def mark_picked(self, sku: int) -> None:
-        """Record one SKU line as picked (called by the station's picker)."""
+        """Record one line as picked (called by the station's picker)."""
         self.picked_skus.add(sku)
 
     def next_station(self) -> int | None:

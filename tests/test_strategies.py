@@ -31,9 +31,9 @@ def world():
 def test_seeded_orders_reproducible():
     set_order_seed(42)
     Order._next_id = 1
-    first = [Order().picks for _ in range(20)]
+    first = [Order().lines for _ in range(20)]
     Order._next_id = 1
-    second = [Order().picks for _ in range(20)]
+    second = [Order().lines for _ in range(20)]
     assert first == second
     set_order_seed(None)
 
@@ -48,7 +48,7 @@ def test_order_n_identical_regardless_of_creation_order():
     Order()
     Order._next_id = 5
     o5_again = Order()
-    assert o5.picks == o5_again.picks
+    assert o5.lines == o5_again.lines
     set_order_seed(None)
 
 

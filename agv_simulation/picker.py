@@ -6,7 +6,7 @@ the Dispatcher (``gating=True``, the normal mode; there is no flat-timer
 fallback) — gate the cart's departure: ``cart_done(cart)`` is the release
 rule, and the picker calls ``order.complete_station()`` on the last line.
 
-Pick lists come from the cart's SKU order (``order.skus_remaining_at``,
+Pick lists come from the cart's SKU order (``order.lines_remaining_at``,
 resume-safe after buffering). Carts without an order (manual/edge cases) get
 a sampled list of ``max(1, round(N(4, 2)))`` SKUs from the station's zone.
 Walking time follows the calibrated aisle geometry (μ 30 s, σ 10 s round
@@ -207,8 +207,8 @@ class PickerManager:
         """The SKU lines this cart needs here: the order's *remaining* lines
         (resume-safe after buffering), or a sampled list when orderless."""
         order = cart.order
-        if order is not None and hasattr(order, "skus_remaining_at"):
-            return order.skus_remaining_at(int(station_id[1:]))
+        if order is not None and hasattr(order, "lines_remaining_at"):
+            return order.lines_remaining_at(int(station_id[1:]))
         return self._sample_picks(station_id)
 
     # -- main tick -------------------------------------------------------
@@ -295,17 +295,17 @@ class PickerManager:
         buffered away mid-picking and brought back only completes once its
         genuinely last line at this station is picked."""
         order = cart.order
-        if order is None or not hasattr(order, "skus_remaining_at"):
+        if order is None or not hasattr(order, "lines_remaining_at"):
             return
         sid = self.station_of_pos.get(cart.pos)
         if sid is None:
             return
         num = int(sid[1:])
-        if not order.skus_remaining_at(num) and num not in order.completed_stations:
+        if not order.lines_remaining_at(num) and num not in order.completed_stations:
             order.complete_station(num)
             logger.debug(
                 "[Picker] C%d: all %d lines picked at %s — station complete",
-                cart.cart_id, order.items_at_station(num), sid,
+                cart.cart_id, order.lines_at_station(num), sid,
             )
 
     # -- reporting ---------------------------------------------------------
@@ -319,10 +319,10 @@ class PickerManager:
         if cart.cart_id in self._tracked:
             return False
         order = cart.order
-        if order is not None and hasattr(order, "skus_remaining_at"):
+        if order is not None and hasattr(order, "lines_remaining_at"):
             sid = self.station_of_pos.get(cart.pos)
             if sid is not None:
-                return not order.skus_remaining_at(int(sid[1:]))
+                return not order.lines_remaining_at(int(sid[1:]))
         return True
 
     def stats(self) -> dict:

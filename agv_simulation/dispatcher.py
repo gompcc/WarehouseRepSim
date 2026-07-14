@@ -298,9 +298,9 @@ class Dispatcher:
                         cart.cart_id, self._sim_elapsed,
                     )
                     logger.debug(
-                        "[Order #%d] Cart C%d: picks=%s, stations=%s",
+                        "[Order #%d] Cart C%d: lines=%s, stations=%s",
                         cart.order.order_id, cart.cart_id,
-                        cart.order.picks,
+                        cart.order.lines,
                         ["S" + str(s) for s in cart.order.stations_to_visit],
                     )
                 ns = self._choose_next_station(cart, carts, agvs)
@@ -507,7 +507,7 @@ class Dispatcher:
             # and _picking_done() holds the cart until then.
             cart.process_timer = 0.0
             remaining = (
-                len(cart.order.skus_remaining_at(station_num))
+                len(cart.order.lines_remaining_at(station_num))
                 if cart.order else 0
             )
             logger.debug(

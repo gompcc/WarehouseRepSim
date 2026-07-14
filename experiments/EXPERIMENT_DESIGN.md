@@ -159,7 +159,7 @@ Recommended to implement (ranked):
 payoff).** Mechanism: when `_choose_next_station`/`_pick_best_station`
 scores candidate stations inside the travel window, score by **picker
 backlog in SKU lines** (queued + in-service remaining, from
-`PickerManager.queues` + `order.skus_remaining_at`) instead of cart-count
+`PickerManager.queues` + `order.lines_remaining_at`) instead of cart-count
 fill. Why it helps here: pickers are the bottleneck and fill-count is a bad
 proxy — one cart with 8 lines occupies a picker longer than three carts with
 1 line each; baseline shows S2 pinned at 100% while S8 idles at 25%.

@@ -258,7 +258,7 @@ def draw_ui(
             ns = order.next_station()
             next_str = f"S{ns}" if ns else "all picked"
             lines.append(
-                f"  Cart C{cart.cart_id} Order #{order.order_id}: picks={order.picks}  "
+                f"  Cart C{cart.cart_id} Order #{order.order_id}: lines={order.lines}  "
                 f"next={next_str}  timer={cart.process_timer:.1f}s"
             )
     else:
