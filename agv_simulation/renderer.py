@@ -493,6 +493,19 @@ def draw_metrics_panel(
                 px + 8, y - 2, PANEL_WIDTH - 16, 16,
             )
             y += 17
+        # Picker strategy toggle: static station-bound vs dynamic
+        # roam-within-side (pickers never cross the highway)
+        pm = getattr(dispatcher, "pickers", None)
+        if pm is not None:
+            on = pm.strategy == "dynamic"
+            color = PANEL_GREEN if on else PANEL_TEXT
+            txt = font_sm.render("  Dynamic pickers", True, color)
+            surface.blit(txt, (px + 8, y))
+            _draw_toggle_switch(surface, px + PANEL_WIDTH - 44, y - 1, on)
+            toggle_rects["picker_dynamic"] = pygame.Rect(
+                px + 8, y - 2, PANEL_WIDTH - 16, 16,
+            )
+            y += 17
         # Active slotting strategy (fixed per run — set at catalog init)
         from .aisles import get_catalog
         try:

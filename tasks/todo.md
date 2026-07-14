@@ -63,11 +63,16 @@ COMMITTED through `3f27a16`. Tree was clean at handoff except `.claude/`.
       N face = run's top edge, S face = bottom edge, split faces segmented;
       S-station tiles outlined in their zone color; ZONES legend top-left.
       Verified via SDL snapshot.
-- [ ] **Picker strategies as experiment toggles (user request)** — (a)
-      STATIC: picker bound to a station + its aisles (current); (b) DYNAMIC:
-      pickers roam, serving the carts that most improve throughput
-      (inter-station walking counted). Headless + GUI toggles; add to the
-      experiment matrix.
+- [x] **Picker strategies as experiment toggles (user request)** — DONE
+      (2026-07-14 evening): `PickerManager(strategy='static'|'dynamic')`;
+      dynamic = idle picker relocates to the worst backlog on ITS OWN SIDE
+      (never crosses the highway), inter-station walk is real time and
+      counts busy; stats add relocations/relocation_seconds; stats
+      attribute to the picker's current station.
+      `run_headless(picker_strategy=...)` + GUI "Dynamic pickers" toggle
+      (STRATEGIES panel; picker overlay shows the mode). 4 new tests
+      (64 green). Experiment matrix §A2 added to EXPERIMENT_DESIGN.md.
+      NO experiment runs yet — user said hold headless runs until told.
 - [ ] **Integration sweep** — seeded runs per slotting × picker strategy,
       GUI snapshot, no stuck pathologies, tests green.
 - [ ] **Cleanup (subagents)** — dead code, efficiency sweep (dispatcher

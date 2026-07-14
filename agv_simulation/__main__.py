@@ -282,6 +282,18 @@ def main() -> None:
                     if rect.collidepoint(mx, my):
                         clicked_toggle = attr
                         break
+                if clicked_toggle == "picker_dynamic":
+                    pm = dispatcher.pickers
+                    pm.strategy = (
+                        "dynamic" if pm.strategy == "static" else "static"
+                    )
+                    state = "ON" if pm.strategy == "dynamic" else "OFF"
+                    strategy_events.append(
+                        (env.sim_elapsed, f"Dynamic pickers {state}")
+                    )
+                    logger.info("[Strategy] Dynamic pickers -> %s (t=%.0fs)",
+                                state, env.sim_elapsed)
+                    continue
                 if clicked_toggle:
                     now_on = not getattr(dispatcher.strategies, clicked_toggle)
                     setattr(dispatcher.strategies, clicked_toggle, now_on)

@@ -76,6 +76,22 @@ derived as `(walk_mean_s − 2.93) / 1.0330 × 1.4` (round-trip metres),
 **Balance metrics:** per-station picks_done CV and max station `fill_rate`
 (names the constraint station per arm).
 
+### A2 — picker strategy (added 2026-07-14, implemented)
+
+`run_headless(picker_strategy=...)`: **`static`** (baseline — picker bound
+to its station) vs **`dynamic`** (idle pickers relocate to the worst
+backlog on their OWN side of the highway; inter-station walk costs real
+time and counts busy; stats report `relocations`/`relocation_seconds`).
+GUI toggle: "Dynamic pickers" in the STRATEGIES panel.
+
+**Matrix:** 2 picker strategies × {sequential, velocity} slotting × 5 seeds
+at 10/25 (20 runs) — crossing matters because dynamic's value should be
+largest where zone workload is unbalanced (sequential: S3 99% busy vs S5
+2%; note S5 is on the *east* side so only S7/S9 can help it — the side
+constraint bounds what roaming can recover).
+**Extra metrics:** relocations/hr, relocation_seconds fraction of busy,
+per-station busy CV (dynamic should compress it within each side).
+
 ---
 
 ## 3. Section B — dispatcher strategies

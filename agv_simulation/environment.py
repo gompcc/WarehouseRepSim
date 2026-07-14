@@ -80,13 +80,16 @@ class Environment:
         stuck_threshold: float = STUCK_WARN_SECONDS,
         event_jsonl: str | None = None,
         slotting: str = "sequential",
+        picker_strategy: str = "static",
     ) -> None:
         self.tiles = tiles if tiles is not None else build_map()
         self.graph = build_graph(self.tiles)
         # 2000-SKU aisle catalog (PRD §14); slotting picks the SKU placement
         # strategy (sequential / aisle_proximal / fibonacci / velocity)
         self.catalog = init_catalog(self.tiles, slotting=slotting)
-        self.pickers = PickerManager(self.tiles)  # shadow-mode pickers (PRD §14.9)
+        # Pickers (PRD §14.9); strategy: static station-bound vs dynamic
+        # roam-within-side (experiment toggle)
+        self.pickers = PickerManager(self.tiles, strategy=picker_strategy)
         self.agvs: list[AGV] = []
         self.carts: list[Cart] = []
         self.sim_elapsed: float = 0.0
