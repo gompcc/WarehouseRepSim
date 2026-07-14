@@ -66,31 +66,6 @@ def draw_zone_borders(surface: pygame.Surface) -> None:
         pygame.draw.rect(surface, color, rect)
 
 
-def draw_zone_legend(
-    surface: pygame.Surface, font_sm: pygame.font.Font, x: int = 6, y: int = 101,
-) -> None:
-    """Compact swatch legend for the zone border colors."""
-    pad, sw, gap = 5, 9, 6
-    entries = [(sid, ZONE_COLORS[sid]) for sid in sorted(ZONE_COLORS)]
-    labels = [font_sm.render(sid, True, LABEL_COLOR) for sid, _ in entries]
-    title = font_sm.render("ZONES", True, LABEL_COLOR)
-    w = (pad + title.get_width() + gap
-         + sum(sw + 2 + lb.get_width() + gap for lb in labels) + pad - gap)
-    h = max(title.get_height(), sw) + 2 * pad
-    box = pygame.Rect(x, y, w, h)
-    pygame.draw.rect(surface, LABEL_BG, box)
-    pygame.draw.rect(surface, OUTLINE_COLOR, box, 1)
-    cx = x + pad
-    cy = y + h // 2
-    surface.blit(title, (cx, cy - title.get_height() // 2))
-    cx += title.get_width() + gap
-    for (sid, color), lb in zip(entries, labels):
-        pygame.draw.rect(surface, color, pygame.Rect(cx, cy - sw // 2, sw, sw))
-        cx += sw + 2
-        surface.blit(lb, (cx, cy - lb.get_height() // 2))
-        cx += lb.get_width() + gap
-
-
 def draw_tile(surface: pygame.Surface, tile) -> None:
     """Draw one tile at its grid position."""
     px = tile.x * TILE_SIZE
@@ -110,10 +85,25 @@ def draw_tile(surface: pygame.Surface, tile) -> None:
             pygame.draw.rect(surface, color, rect)
         pygame.draw.rect(surface, OUTLINE_COLOR, rect, 1)
     elif tile.tile_type == TileType.PICK_STATION:
-        pygame.draw.rect(surface, color, rect)
-        # Outline in the station's zone color (ties station to its aisles)
-        outline = ZONE_COLORS.get(tile.station_id, (200, 160, 30))
-        pygame.draw.rect(surface, outline, rect, 2)
+        # Station wears its zone color (light tint fill + solid outline) so
+        # it visually matches the aisles it serves — no legend needed.
+        zone = ZONE_COLORS.get(tile.station_id)
+        if zone:
+            tint = tuple(int(c + (255 - c) * 0.60) for c in zone)
+            pygame.draw.rect(surface, tint, rect)
+            pygame.draw.rect(surface, zone, rect, 2)
+        else:
+            pygame.draw.rect(surface, color, rect)
+            pygame.draw.rect(surface, (200, 160, 30), rect, 1)
+    elif tile.tile_type == TileType.RACKING:
+        # Station racking area wears a light tint of the station's zone
+        # color (replaces the old uniform pale yellow)
+        zone = ZONE_COLORS.get(tile.station_id)
+        if zone:
+            tint = tuple(int(c + (255 - c) * 0.72) for c in zone)
+            pygame.draw.rect(surface, tint, rect)
+        else:
+            pygame.draw.rect(surface, color, rect)
     else:
         pygame.draw.rect(surface, color, rect)
 
@@ -131,6 +121,12 @@ def draw_labels(
     station additionally shows its predicted occupancy ~60s out ("→n.n").
     """
 
+    def _zone_tint(station_id: str) -> tuple[int, int, int] | None:
+        zone = ZONE_COLORS.get(station_id)
+        if zone is None:
+            return None
+        return tuple(int(c + (255 - c) * 0.60) for c in zone)
+
     def label(
         text: str, cx: int, cy: int,
         font: pygame.font.Font | None = None, bg: bool = True,
@@ -141,8 +137,11 @@ def draw_labels(
         if bg:
             pad = 3
             bgr = r.inflate(pad * 2, pad * 2)
-            pygame.draw.rect(surface, LABEL_BG, bgr)
-            pygame.draw.rect(surface, OUTLINE_COLOR, bgr, 1)
+            # S-station labels wear their zone tint (station == its aisles)
+            bg_fill = _zone_tint(text) or LABEL_BG
+            outline = ZONE_COLORS.get(text, OUTLINE_COLOR)
+            pygame.draw.rect(surface, bg_fill, bgr)
+            pygame.draw.rect(surface, outline, bgr, 1)
         surface.blit(txt, r)
 
     def capacity_label(station_id: str, cx: int, cy: int) -> None:
@@ -163,8 +162,10 @@ def draw_labels(
         r = txt.get_rect(center=(cx, cy))
         pad = 3
         bgr = r.inflate(pad * 2, pad * 2)
-        pygame.draw.rect(surface, LABEL_BG, bgr)
-        pygame.draw.rect(surface, OUTLINE_COLOR, bgr, 1)
+        bg_fill = _zone_tint(station_id) or LABEL_BG
+        outline = ZONE_COLORS.get(station_id, OUTLINE_COLOR)
+        pygame.draw.rect(surface, bg_fill, bgr)
+        pygame.draw.rect(surface, outline, bgr, 1)
         surface.blit(txt, r)
 
         # Live ETA forecast: predicted occupancy ~60s out (ETA strategy on)
@@ -667,9 +668,9 @@ def render(
         for tile in by_type[tt]:
             draw_tile(screen, tile)
 
-    # Station zone ownership: colored racking-run borders + legend
+    # Station zone ownership: colored racking-run borders (stations wear
+    # the same color, so no legend)
     draw_zone_borders(screen)
-    draw_zone_legend(screen, font_sm)
 
     # Station tile color overlay based on fill rate
     station_fill = dispatcher._station_fill_cache if dispatcher else None

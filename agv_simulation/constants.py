@@ -3,16 +3,18 @@ from .enums import TileType
 # ============================================================
 # CONSTANTS
 # ============================================================
-TILE_SIZE = 16          # Each tile is 16x16 pixels (1 tile = 1 metre)
+TILE_SIZE = 12          # Each tile is 12x12 pixels (1 tile = 1 metre);
+                        # sized so the window fits a 13" MacBook Pro
+                        # (1440x900 logical) with the side panel visible
 GRID_COLS = 86          # 86 columns (x: 0-85). Cols 0-13 = west aisle bank,
                         # 14-73 = legacy layout shifted +14, 74-85 = east bank
 GRID_ROWS = 40          # 40 rows     (y: 0-39, top to bottom)
-MAP_WIDTH     = GRID_COLS * TILE_SIZE   # 1376 px (map area)
-MAP_HEIGHT    = GRID_ROWS * TILE_SIZE   # 640 px
+MAP_WIDTH     = GRID_COLS * TILE_SIZE   # 1032 px (map area)
+MAP_HEIGHT    = GRID_ROWS * TILE_SIZE   # 480 px
 PANEL_WIDTH   = 300
 THROUGHPUT_STRIP_H = 80  # live orders/hr graph strip under the map
-WINDOW_WIDTH  = MAP_WIDTH + PANEL_WIDTH        # 1676 px total
-WINDOW_HEIGHT = MAP_HEIGHT + THROUGHPUT_STRIP_H  # 720 px
+WINDOW_WIDTH  = MAP_WIDTH + PANEL_WIDTH        # 1332 px total
+WINDOW_HEIGHT = MAP_HEIGHT + THROUGHPUT_STRIP_H  # 560 px
 FPS = 30
 
 SPEED_STEPS = [0.5, 1.0, 2.0, 5.0, 10.0, 20.0, 50.0, 100.0]

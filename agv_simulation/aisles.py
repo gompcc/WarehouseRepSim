@@ -155,12 +155,27 @@ class Catalog:
         self.locations: list[Location] = _layout_locations()
 
         # Geometric zoning: each location belongs to the station with the
-        # shortest walk. Independent of which SKU ends up there.
+        # shortest walk ON ITS OWN SIDE. Pickers cannot cross the one-way
+        # highway (user constraint 2026-07-14), so a station only serves
+        # the bank on its side: west of the left highway / between the
+        # highways / east of the right highway. Bank names match sides.
+        def _station_side(sx: float) -> str:
+            if sx < LEFT_HWY_COL:
+                return "west"
+            if sx > RIGHT_HWY_COL:
+                return "east"
+            return "central"
+
+        self.station_side: dict[str, str] = {
+            sid: _station_side(sx) for sid, (sx, _sy) in self.station_pos.items()
+        }
         self._loc_station: dict[int, str] = {}
         self._loc_walk: dict[int, float] = {}
         for loc in self.locations:
             best_sid, best_d = None, float("inf")
             for sid in self.station_pos:
+                if self.station_side[sid] != loc.bank:
+                    continue
                 d = self._walk_distance_to(sid, loc.x, loc.walkway_row, loc.bank)
                 if d < best_d:
                     best_sid, best_d = sid, d
