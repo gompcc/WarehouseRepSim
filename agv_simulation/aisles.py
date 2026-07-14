@@ -274,6 +274,37 @@ class Catalog:
         every slotting strategy faces the identical order stream."""
         return self._weighted_sample(sorted(self.slots), n, rng)
 
+    def zone_border_segments(self) -> list[tuple[str, int, str, float, float, str]]:
+        """Contiguous same-owner spans along each racking face, for the map.
+
+        Returns ``(bank, run_row, face, x_start, x_end, station_id)`` per
+        span. Purely geometric (nearest-walk zoning of *locations*), so the
+        segments are identical under every slotting strategy. The two faces
+        of a run are independent, and a face split between stations yields
+        one segment per owner (segmented borders).
+        """
+        if not hasattr(self, "_zone_segments"):
+            faces: dict[tuple[str, int, str], dict[float, str]] = {}
+            for loc in self.locations:
+                key = (loc.bank, loc.run_row, loc.face)
+                faces.setdefault(key, {})[loc.x] = self._loc_station[loc.index]
+            segments: list[tuple[str, int, str, float, float, str]] = []
+            for (bank, run_row, face), by_x in faces.items():
+                b = next(bk for bk in BANKS if bk.name == bank)
+                xs = sorted(by_x)
+                pitch = xs[1] - xs[0] if len(xs) > 1 else 1.0
+                seg_start = max(xs[0] - pitch / 2, float(b.col_start))
+                owner = by_x[xs[0]]
+                for prev, x in zip(xs, xs[1:]):
+                    if by_x[x] != owner:
+                        mid = (prev + x) / 2
+                        segments.append((bank, run_row, face, seg_start, mid, owner))
+                        seg_start, owner = mid, by_x[x]
+                seg_end = min(xs[-1] + pitch / 2, float(b.col_end + 1))
+                segments.append((bank, run_row, face, seg_start, seg_end, owner))
+            self._zone_segments = segments
+        return self._zone_segments
+
     def demand_weighted_walk_m(self) -> float:
         """Mean one-way walk per pick, weighted by SKU demand — THE slotting
         comparison metric (calibration constants stay frozen)."""

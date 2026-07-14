@@ -29,6 +29,68 @@ if TYPE_CHECKING:
     from .models import Cart
 
 
+# Station zone identity colors (categorical palette; legend carries identity)
+ZONE_COLORS: dict[str, tuple[int, int, int]] = {
+    "S1": (42, 120, 214),   # blue
+    "S2": (27, 175, 122),   # aqua
+    "S3": (237, 161, 0),    # yellow
+    "S4": (0, 131, 0),      # green
+    "S5": (74, 58, 167),    # violet
+    "S6": (227, 73, 72),    # red
+    "S7": (232, 123, 164),  # magenta
+    "S8": (235, 104, 52),   # orange
+    "S9": (14, 124, 134),   # teal
+}
+
+
+def draw_zone_borders(surface: pygame.Surface) -> None:
+    """Color each racking run's border by the station owning its slots.
+
+    Per face: the N face (picked from the walkway above) gets the run's top
+    edge, the S face the bottom edge — the two faces of one run can belong
+    to different stations, and a face split between stations shows one
+    colored segment per owner."""
+    from .aisles import get_catalog
+    try:
+        cat = get_catalog()
+    except Exception:
+        return
+    for bank, run_row, face, x0, x1, sid in cat.zone_border_segments():
+        color = ZONE_COLORS.get(sid)
+        if color is None:
+            continue
+        y = run_row * TILE_SIZE if face == "N" else (run_row + 1) * TILE_SIZE - 3
+        rect = pygame.Rect(
+            round(x0 * TILE_SIZE), y, round((x1 - x0) * TILE_SIZE), 3,
+        )
+        pygame.draw.rect(surface, color, rect)
+
+
+def draw_zone_legend(
+    surface: pygame.Surface, font_sm: pygame.font.Font, x: int = 6, y: int = 101,
+) -> None:
+    """Compact swatch legend for the zone border colors."""
+    pad, sw, gap = 5, 9, 6
+    entries = [(sid, ZONE_COLORS[sid]) for sid in sorted(ZONE_COLORS)]
+    labels = [font_sm.render(sid, True, LABEL_COLOR) for sid, _ in entries]
+    title = font_sm.render("ZONES", True, LABEL_COLOR)
+    w = (pad + title.get_width() + gap
+         + sum(sw + 2 + lb.get_width() + gap for lb in labels) + pad - gap)
+    h = max(title.get_height(), sw) + 2 * pad
+    box = pygame.Rect(x, y, w, h)
+    pygame.draw.rect(surface, LABEL_BG, box)
+    pygame.draw.rect(surface, OUTLINE_COLOR, box, 1)
+    cx = x + pad
+    cy = y + h // 2
+    surface.blit(title, (cx, cy - title.get_height() // 2))
+    cx += title.get_width() + gap
+    for (sid, color), lb in zip(entries, labels):
+        pygame.draw.rect(surface, color, pygame.Rect(cx, cy - sw // 2, sw, sw))
+        cx += sw + 2
+        surface.blit(lb, (cx, cy - lb.get_height() // 2))
+        cx += lb.get_width() + gap
+
+
 def draw_tile(surface: pygame.Surface, tile) -> None:
     """Draw one tile at its grid position."""
     px = tile.x * TILE_SIZE
@@ -49,7 +111,9 @@ def draw_tile(surface: pygame.Surface, tile) -> None:
         pygame.draw.rect(surface, OUTLINE_COLOR, rect, 1)
     elif tile.tile_type == TileType.PICK_STATION:
         pygame.draw.rect(surface, color, rect)
-        pygame.draw.rect(surface, (200, 160, 30), rect, 1)
+        # Outline in the station's zone color (ties station to its aisles)
+        outline = ZONE_COLORS.get(tile.station_id, (200, 160, 30))
+        pygame.draw.rect(surface, outline, rect, 2)
     else:
         pygame.draw.rect(surface, color, rect)
 
@@ -602,6 +666,10 @@ def render(
     for tt in layer_order:
         for tile in by_type[tt]:
             draw_tile(screen, tile)
+
+    # Station zone ownership: colored racking-run borders + legend
+    draw_zone_borders(screen)
+    draw_zone_legend(screen, font_sm)
 
     # Station tile color overlay based on fill rate
     station_fill = dispatcher._station_fill_cache if dispatcher else None

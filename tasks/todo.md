@@ -43,10 +43,12 @@ COMMITTED through `3f27a16`. Tree was clean at handoff except `.claude/`.
       GUI now shows "Slotting: <name>" under STRATEGIES; stale
       "picks/cart-visit μ4 σ2" overlay label replaced with
       "lines/order: μ20 σ9". Verified via SDL dummy snapshot.
-- [ ] **Station/aisle zone color-coding (user request)** — each S station
-      gets a color; each racking run's border colored by the station owning
-      its slots, per face (N/S side of a run can differ; a face split
-      between stations gets segmented borders). Legend on map.
+- [x] **Station/aisle zone color-coding (user request)** — DONE (2026-07-14):
+      `Catalog.zone_border_segments()` (geometric — identical across
+      slottings) + renderer `ZONE_COLORS`/`draw_zone_borders`/legend.
+      N face = run's top edge, S face = bottom edge, split faces segmented;
+      S-station tiles outlined in their zone color; ZONES legend top-left.
+      Verified via SDL snapshot.
 - [ ] **Picker strategies as experiment toggles (user request)** — (a)
       STATIC: picker bound to a station + its aisles (current); (b) DYNAMIC:
       pickers roam, serving the carts that most improve throughput
