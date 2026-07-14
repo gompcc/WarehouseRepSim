@@ -20,7 +20,7 @@ from __future__ import annotations
 
 from typing import TYPE_CHECKING
 
-from ..enums import AGVState, CartState, JobType, TileType
+from ..enums import AGVState, JobType, TileType
 from ..constants import PICKUP_TIME, DROPOFF_TIME, TILE_TRAVEL_TIME
 from ..models import STATIONS
 from .distances import DistanceMap, INF

@@ -186,7 +186,7 @@ def build_graph(
             highway_positions.add(pos)
         elif tile.tile_type in (
             TileType.PICK_STATION, TileType.PARKING,
-            TileType.AGV_SPAWN, TileType.CART_SPAWN,
+            TileType.AGV_SPAWN,
         ):
             non_highway_positions.add(pos)
 
@@ -267,7 +267,7 @@ def build_graph(
                 tile = tiles[neighbor]
                 if tile.tile_type in (
                     TileType.PICK_STATION, TileType.PARKING,
-                    TileType.AGV_SPAWN, TileType.CART_SPAWN,
+                    TileType.AGV_SPAWN,
                 ):
                     graph[pos].add(neighbor)
                     graph[neighbor].add(pos)

@@ -37,6 +37,18 @@ class Dispatcher:
             key = (tile.station_id, tile.tile_type)
             if tile.station_id:
                 self._station_tiles.setdefault(key, []).append((x, y))
+        # Static candidate sets, precomputed once in tile insertion order so
+        # nearest-tile searches iterate ~100 tiles instead of all ~1100
+        # (identical results: order + strict-less tie-breaks preserved)
+        self._buffer_tiles: list[tuple[int, int]] = [
+            pos for pos, t in tiles.items()
+            if t.tile_type == TileType.PARKING and t.station_id is None
+        ]
+        self._park_tiles: list[tuple[int, int]] = [
+            pos for pos, t in tiles.items()
+            if t.tile_type in (TileType.PARKING, TileType.AGV_SPAWN)
+            and t.station_id is None
+        ]
         self.pending_jobs: list[Job] = []
         self.active_jobs: list[Job] = []
         self.completed_orders: int = 0
@@ -241,11 +253,7 @@ class Dispatcher:
             reserved = reserved | {a.pos for a in agvs}
         best: tuple[int, int] | None = None
         best_dist = float("inf")
-        for pos, tile in tiles.items():
-            if tile.tile_type != TileType.PARKING:
-                continue
-            if tile.station_id is not None:
-                continue  # skip station-associated parking (Box Depot, Pack-off)
+        for pos in self._buffer_tiles:
             if pos in reserved:
                 continue
             dist = abs(pos[0] - near_pos[0]) + abs(pos[1] - near_pos[1])
@@ -259,15 +267,13 @@ class Dispatcher:
         the station until every one of its SKU lines there is picked."""
         return self.pickers.cart_done(cart)
 
-    def _has_job(self, cart: Cart) -> bool:
-        """Check if *cart* already has a pending or active job."""
-        for job in self.pending_jobs:
-            if job.cart is cart:
-                return True
-        for job in self.active_jobs:
-            if job.cart is cart:
-                return True
-        return False
+    def _jobbed_cart_ids(self) -> set[int]:
+        """id()s of carts with any pending/active job (built per call —
+        O(jobs) instead of the old O(carts x jobs) rescans)."""
+        return (
+            {id(j.cart) for j in self.pending_jobs}
+            | {id(j.cart) for j in self.active_jobs}
+        )
 
     def _create_jobs(
         self,
@@ -277,9 +283,13 @@ class Dispatcher:
         tiles: dict[tuple[int, int], Tile],
     ) -> None:
         """Check carts and create jobs as needed (capacity-based station routing)."""
+        # Built once per pass: jobs appended inside the loop belong to the
+        # cart being processed, never to a later cart, so a stale set gives
+        # identical answers to the old per-cart job-list rescans.
+        jobbed = self._jobbed_cart_ids()
         # Most-buffered carts get first dibs on station tiles (starvation prevention)
         for cart in sorted(carts, key=lambda c: -c.times_buffered):
-            if self._has_job(cart):
+            if id(cart) in jobbed:
                 continue
 
             if cart.state == CartState.SPAWNED and cart.carried_by is None:
@@ -794,15 +804,12 @@ class Dispatcher:
                 agv_positions = {a.pos for a in agvs}
                 best_tile = None
                 best_dist = float("inf")
-                for pos, tile in tiles.items():
-                    if tile.tile_type in (TileType.PARKING, TileType.AGV_SPAWN):
-                        if tile.station_id is not None:
-                            continue  # skip station-associated parking
-                        if pos not in agv_positions:
-                            d = abs(pos[0] - blocker.pos[0]) + abs(pos[1] - blocker.pos[1])
-                            if d < best_dist:
-                                best_dist = d
-                                best_tile = pos
+                for pos in self._park_tiles:
+                    if pos not in agv_positions:
+                        d = abs(pos[0] - blocker.pos[0]) + abs(pos[1] - blocker.pos[1])
+                        if d < best_dist:
+                            best_dist = d
+                            best_tile = pos
                 if best_tile and blocker.set_destination(best_tile, graph, tiles):
                     logger.debug(
                         "[Collision] Nudged idle AGV %d from %s → %s",
@@ -852,11 +859,7 @@ class Dispatcher:
             # Find nearest parking/spawn tile not occupied by another AGV
             best: tuple[int, int] | None = None
             best_dist = float("inf")
-            for pos, t in tiles.items():
-                if t.tile_type not in (TileType.PARKING, TileType.AGV_SPAWN):
-                    continue
-                if t.station_id is not None:
-                    continue  # skip station-associated parking
+            for pos in self._park_tiles:
                 if pos in agv_positions:
                     continue
                 d = abs(pos[0] - agv.pos[0]) + abs(pos[1] - agv.pos[1])

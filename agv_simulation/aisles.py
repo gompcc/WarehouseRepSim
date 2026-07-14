@@ -280,10 +280,6 @@ class Catalog:
                     break
         return sorted(chosen)
 
-    def sample_zone_skus(self, station_id: str, n: int, rng) -> list[int]:
-        """Popularity-weighted sample WITHOUT replacement from a zone."""
-        return self._weighted_sample(self.station_skus.get(station_id, []), n, rng)
-
     def sample_skus(self, n: int, rng) -> list[int]:
         """Popularity-weighted sample WITHOUT replacement from the whole
         catalog (SKU space) — demand independent of slot placement, so

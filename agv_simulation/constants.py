@@ -54,7 +54,6 @@ TILE_COLORS = {
     TileType.BOX_DEPOT:    (170, 135, 75),
     TileType.PACKOFF:      (175, 165, 225),
     TileType.AGV_SPAWN:    (155, 155, 155),
-    TileType.CART_SPAWN:   (195, 155, 225),
     TileType.RACKING:      (255, 242, 185),
     TileType.AISLE_RACK:   (52, 52, 60),
 }
