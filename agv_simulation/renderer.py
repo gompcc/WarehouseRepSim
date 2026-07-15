@@ -741,7 +741,7 @@ def draw_throughput_strip(
     pygame.draw.line(surface, PANEL_SEPARATOR, (0, MAP_HEIGHT), (MAP_WIDTH, MAP_HEIGHT))
 
     title = font_sm.render(
-        f"PICKS/HR by slotting  (rolling {int(ROLLING_WINDOW / 60)}min)",
+        f"LINES/HR by slotting  (rolling {int(ROLLING_WINDOW / 60)}min)",
         True, PANEL_HEADER,
     )
     surface.blit(title, (10, MAP_HEIGHT + 4))
@@ -788,6 +788,19 @@ def draw_throughput_strip(
     zero_lbl = font_sm.render("0", True, PANEL_TEXT)
     surface.blit(zero_lbl, (gx - zero_lbl.get_width() - 4, gy + gh - 6))
 
+    # Horizontal gridlines at round lines/hr steps
+    grid_step = next(
+        (s for s in (10, 20, 50, 100, 200, 250, 500, 1000, 2000)
+         if max_rate / s <= 5), 5000,
+    )
+    v = grid_step
+    while v < max_rate:
+        yv = gy + gh - int(gh * v / max_rate)
+        pygame.draw.line(surface, (50, 50, 66), (gx + 1, yv), (gx + gw, yv))
+        g_lbl = font_sm.render(f"{v}", True, (110, 112, 130))
+        surface.blit(g_lbl, (gx - g_lbl.get_width() - 4, yv - 6))
+        v += grid_step
+
     # Dispatch-toggle markers (current run's sim times)
     for t_ev, label in (strategy_events or []):
         if t_ev <= 0 or t_ev > x_max:
@@ -822,6 +835,39 @@ def draw_throughput_strip(
             current_rate = pts[-1][1]
             live_stable = _is_stable(pts[-1][0])
 
+    # Settled-average per state: for each stretch between world rebuilds
+    # (layout / slotting changes), average the lines/hr AFTER its warm-up
+    # and draw it as a flat horizontal line across the stretch — the
+    # "active average" of that configuration, so changes compare at a
+    # glance. Computed from the raw cumulative samples, not the rolling
+    # curve, so it is exact.
+    merged = sorted(
+        pt for series in (picks_history or {}).values() for pt in series
+    )
+    marks = sorted(set(restart_marks or [0.0]))
+    avg_color = (225, 228, 240)
+    active_avg: float | None = None
+    for m0, m1 in zip(marks, marks[1:] + [x_max]):
+        settled = [
+            (t, c) for t, c in merged
+            if m0 + EQUILIBRIUM_SECONDS <= t <= m1
+        ]
+        if len(settled) < 2 or settled[-1][0] <= settled[0][0]:
+            continue
+        (t0, c0), (t1, c1) = settled[0], settled[-1]
+        seg_avg = (c1 - c0) / (t1 - t0) * 3600.0
+        y_avg = gy + gh - int(gh * min(seg_avg / max_rate, 1.0))
+        x0 = gx + int(gw * min(m0 / x_max, 1.0))
+        x1 = gx + int(gw * min(m1 / x_max, 1.0))
+        pygame.draw.line(surface, avg_color, (x0, y_avg), (x1, y_avg), 1)
+        a_lbl = font_sm.render(f"ø{seg_avg:.0f}", True, avg_color)
+        surface.blit(
+            a_lbl,
+            (max(x0 + 2, x1 - a_lbl.get_width() - 2), max(gy, y_avg - 12)),
+        )
+        if m0 == marks[-1] or m1 == x_max:
+            active_avg = seg_avg
+
     # Legend (top-right of the plot area), live entry bright
     lx = gx + gw - 4
     for name, _ in reversed(curves):
@@ -842,13 +888,12 @@ def draw_throughput_strip(
         if not live_stable:
             st_txt = font_sm.render("stabilising…", True, grey)
             surface.blit(st_txt, (gx + gw + 6, gy + 34))
-    series = (picks_history or {}).get(current_name or "", [])
-    if series and series[-1][0] > 0:
-        t_last, picks_last = series[-1]
-        avg_txt = font_sm.render(
-            f"avg: {picks_last / (t_last / 3600.0):.0f}/hr", True, PANEL_TEXT,
-        )
-        surface.blit(avg_txt, (gx + gw + 6, gy + 18))
+    # The ACTIVE configuration's settled average (matches its flat line)
+    if active_avg is not None:
+        avg_txt = font_sm.render(f"avg: {active_avg:.0f}/hr", True, avg_color)
+    else:
+        avg_txt = font_sm.render("avg: settling…", True, grey)
+    surface.blit(avg_txt, (gx + gw + 6, gy + 18))
 
 
 def render(
