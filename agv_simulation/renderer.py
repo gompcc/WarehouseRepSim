@@ -760,9 +760,17 @@ def _draw_order_size_hist(
 def _draw_station_load_bars(
     surface: pygame.Surface, font: pygame.font.Font,
     carts, rect: pygame.Rect,
+    picker_counts: dict | None = None,
+    constraint: str | None = None,
 ) -> None:
-    """Live loading per station: how many active orders still need to
-    visit each S station (their un-completed station visits)."""
+    """Live station view, one column per S station:
+
+    - BAR: the station's whole order backlog (active orders that still
+      need to visit it), zone-colored — RED when the station is the
+      dispatcher's current binding constraint.
+    - WHITE TICK: cart capacity, on the same left scale as the backlog.
+    - GREEN DOT: picker headcount there, on the right-hand axis.
+    """
     load = {i: 0 for i in range(1, 10)}
     for cart in carts or []:
         order = getattr(cart, "order", None)
@@ -771,19 +779,25 @@ def _draw_station_load_bars(
         for s in getattr(order, "stations_to_visit", ()):
             if s not in order.completed_stations:
                 load[s] += 1
-    title = font.render("orders loading S1–S9", True, PANEL_HEADER)
+    caps = {i: STATIONS.get(f"S{i}", 0) for i in range(1, 10)}
+    pk = picker_counts or {}
+    title = font.render("backlog | cap – | pickers ●", True, PANEL_HEADER)
     surface.blit(title, (rect.x, rect.y - 14))
     pygame.draw.line(
         surface, PANEL_SEPARATOR, (rect.x, rect.bottom), (rect.right, rect.bottom),
     )
-    peak = max(load.values())
+    left_max = max(max(load.values()), max(caps.values()), 1)
+    right_max = max([pk.get(f"S{i}", 0) for i in range(1, 10)] + [2])
     bw = rect.w / 9
+    dot_color = (20, 150, 60)
     for i in range(1, 10):
+        sid = f"S{i}"
         cx = round(rect.x + (i - 1) * bw)
-        color = ZONE_COLORS.get(f"S{i}", PANEL_TEXT)
+        zone = ZONE_COLORS.get(sid, PANEL_TEXT)
+        color = PANEL_RED if constraint == sid else zone
         c = load[i]
-        if c and peak:
-            h = max(2, round(rect.h * c / peak))
+        if c:
+            h = max(2, round(rect.h * c / left_max))
             pygame.draw.rect(surface, color, pygame.Rect(
                 cx + 2, rect.bottom - h, round(bw) - 4, h,
             ))
@@ -792,10 +806,29 @@ def _draw_station_load_bars(
                 round(cx + (bw - cnt.get_width()) / 2),
                 max(rect.y - 2, rect.bottom - h - 12),
             ))
+        if caps[i]:
+            cap_y = rect.bottom - round(rect.h * caps[i] / left_max)
+            pygame.draw.line(
+                surface, (235, 238, 245),
+                (cx + 1, cap_y), (cx + round(bw) - 3, cap_y),
+            )
+        n_pick = pk.get(sid, 0)
+        if n_pick:
+            dot_y = rect.bottom - round(rect.h * n_pick / right_max)
+            pygame.draw.circle(
+                surface, dot_color,
+                (round(cx + bw / 2), max(rect.y + 3, dot_y)), 3,
+            )
         lbl = font.render(str(i), True, color)
         surface.blit(
             lbl, (round(cx + (bw - lbl.get_width()) / 2), rect.bottom + 2),
         )
+    # Right axis (pickers) scale: max value at the top in dot color
+    r_lbl = font.render(str(right_max), True, dot_color)
+    surface.blit(r_lbl, (rect.right + 3, rect.y - 4))
+    # Left axis (orders/carts) scale
+    l_lbl = font.render(str(left_max), True, (110, 112, 130))
+    surface.blit(l_lbl, (rect.x - l_lbl.get_width() - 3, rect.y - 4))
 
 
 def draw_throughput_strip(
@@ -807,6 +840,8 @@ def draw_throughput_strip(
     picks_history: dict[str, list[tuple[float, float]]] | None = None,
     restart_marks: list[tuple[float, str]] | None = None,
     carts=None,
+    agvs=None,
+    picker_counts: dict | None = None,
 ) -> None:
     """Per-slotting picks/hr graph in the strip under the map.
 
@@ -840,8 +875,17 @@ def draw_throughput_strip(
         dispatcher.completed_order_sizes if dispatcher else [],
         pygame.Rect(690, MAP_HEIGHT + 34, 150, 100),
     )
+    constraint_name = None
+    if dispatcher is not None and carts is not None and agvs is not None:
+        try:
+            (constraint_name, _pct), _scores = dispatcher.get_constraint(
+                carts, agvs,
+            )
+        except Exception:
+            constraint_name = None
     _draw_station_load_bars(
         surface, font_sm, carts, pygame.Rect(872, MAP_HEIGHT + 34, 150, 100),
+        picker_counts=picker_counts, constraint=constraint_name,
     )
 
     curves: list[tuple[str, list[tuple[float, float]]]] = []
@@ -1119,6 +1163,8 @@ def render(
         picks_history=picks_history,
         restart_marks=restart_marks,
         carts=carts,
+        agvs=agvs,
+        picker_counts=picker_counts,
     )
 
     return draw_metrics_panel(
