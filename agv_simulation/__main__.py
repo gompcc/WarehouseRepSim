@@ -409,8 +409,27 @@ def main() -> None:
                         old, new, GUI_ORDER_SEED, *fleet_target,
                     )
                     continue
+                if clicked_toggle == "extra_slots":
+                    lay = get_layout()
+                    new_lay = HighwayLayout(
+                        lay.left_col, lay.right_col, not lay.extra_slots,
+                    )
+                    state = "ON" if new_lay.extra_slots else "OFF"
+                    if env.sim_elapsed > 0:
+                        dispatcher.export_results(env.sim_elapsed, agvs, carts)
+                    apply_layout(new_lay, label=f"extra slots {state.lower()}")
+                    strategy_events.append(
+                        (picks_t_offset, f"Extra slots {state}")
+                    )
+                    logger.info(
+                        "[Layout] Extra pick slots -> %s (every station "
+                        "%+d cart slot)", state, 1 if new_lay.extra_slots else -1,
+                    )
+                    continue
                 if clicked_toggle == "highway_optimum":
-                    target = HighwayLayout(*OPTIMAL_HIGHWAY)
+                    target = HighwayLayout(
+                        *OPTIMAL_HIGHWAY, extra_slots=get_layout().extra_slots,
+                    )
                     if get_layout() != target:
                         if env.sim_elapsed > 0:
                             dispatcher.export_results(

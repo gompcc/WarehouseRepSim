@@ -49,6 +49,7 @@ def run_headless(
     results_json: str | None = None,
     highway: tuple[int, int] | None = None,
     picker_management: bool = False,
+    extra_slots: bool = False,
 ) -> dict:
     """Run the simulation without pygame, using a fixed timestep.
 
@@ -94,7 +95,10 @@ def run_headless(
     # Dynamic highway: install the requested pillar columns, or reset to
     # the default so a moved layout can't leak between runs in one process
     # (sweeps call run_headless repeatedly).
-    layout = HighwayLayout(*highway) if highway else HighwayLayout()
+    layout = (
+        HighwayLayout(*highway, extra_slots=extra_slots) if highway
+        else HighwayLayout(extra_slots=extra_slots)
+    )
 
     env = Environment(
         event_jsonl=event_jsonl, slotting=slotting,
@@ -199,6 +203,7 @@ def run_headless(
         "slotting": slotting,
         "picker_strategy": picker_strategy,
         "highway": (layout.left_col, layout.right_col),
+        "extra_slots": layout.extra_slots,
         "order_book": order_book,
         "completed_orders": completed,
         "orders_per_hour": orders_per_hour,

@@ -94,6 +94,10 @@ def build_map(
         fill_rect(s.rack_x0, s.y0, s.rack_x1, s.y1, TileType.RACKING, s.sid)
         for y in range(s.y0, s.y1 + 1):
             put(s.station_col, y, TileType.PICK_STATION, s.sid)
+        if layout.extra_slots:
+            # Extra-slot strategy: one more cart slot in the free gap row
+            # (placed before the gap-parking pass, which skips taken tiles)
+            put(s.station_col, s.extra_row, TileType.PICK_STATION, s.sid)
 
     # 13. PARKING – opposite side of each station
     for s in layout.stations:

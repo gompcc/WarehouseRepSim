@@ -174,6 +174,10 @@ class Dispatcher:
                 else (station_id, TileType.PARKING)
             )
             positions = self._station_tiles.get(key, [])
+            # Capacity follows the LIVE tile map (extra-slot layouts add
+            # cart slots); the static STATIONS value is only a fallback.
+            if positions:
+                capacity = len(positions)
             current = sum(1 for pos in positions if pos in reserved)
             fill[station_id] = (current, capacity, current / capacity if capacity > 0 else 0.0)
         return fill

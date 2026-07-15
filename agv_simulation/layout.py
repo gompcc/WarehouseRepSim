@@ -65,12 +65,17 @@ class StationSpec:
     rack_x1: int      # ... last column (inclusive)
     y0: int           # first row (inclusive)
     y1: int           # last row (inclusive)
+    extra_row: int = 0  # row of the optional extra slot (extra_slots layout)
 
 
 @dataclass(frozen=True)
 class HighwayLayout:
     left_col: int = LEFT_HWY_COL
     right_col: int = RIGHT_HWY_COL
+    # Extra-slot strategy: every station gains one PICK_STATION tile in
+    # the free gap row just below its column (S5 above — row 38 below it
+    # is the East Highway), replacing that row's overflow parking.
+    extra_slots: bool = False
 
     def __post_init__(self) -> None:
         if not (
@@ -88,10 +93,10 @@ class HighwayLayout:
         """Return a layout with one pillar moved to *col*, clamped to bounds."""
         if pillar == "left":
             col = max(LEFT_COL_MIN, min(col, self.right_col - MIN_PILLAR_GAP))
-            return HighwayLayout(col, self.right_col)
+            return HighwayLayout(col, self.right_col, self.extra_slots)
         if pillar == "right":
             col = max(self.left_col + MIN_PILLAR_GAP, min(col, RIGHT_COL_MAX))
-            return HighwayLayout(self.left_col, col)
+            return HighwayLayout(self.left_col, col, self.extra_slots)
         raise ValueError(f"unknown pillar {pillar!r}")
 
     @property
@@ -109,17 +114,18 @@ class HighwayLayout:
         """S1-S9 geometry. Rows are fixed; columns ride the pillars."""
         L, R = self.left_col, self.right_col
         return (
-            # Left pillar: S1/S3 face west, S2/S4 face central
-            StationSpec("S1", L - 1, L + 1, L - 5, L - 2, 10, 14),
-            StationSpec("S2", L + 1, L - 1, L + 2, L + 7, 17, 20),
-            StationSpec("S3", L - 1, L + 1, L - 5, L - 2, 23, 26),
-            StationSpec("S4", L + 1, L - 1, L + 2, L + 7, 29, 32),
+            # Left pillar: S1/S3 face west, S2/S4 face central. extra_row
+            # is the free gap row below the slot column (S5: above).
+            StationSpec("S1", L - 1, L + 1, L - 5, L - 2, 10, 14, 15),
+            StationSpec("S2", L + 1, L - 1, L + 2, L + 7, 17, 20, 21),
+            StationSpec("S3", L - 1, L + 1, L - 5, L - 2, 23, 26, 27),
+            StationSpec("S4", L + 1, L - 1, L + 2, L + 7, 29, 32, 33),
             # Right pillar: S5/S7/S9 face east, S6/S8 face central
-            StationSpec("S5", R + 1, R - 1, R + 2, R + 6, 34, 37),
-            StationSpec("S6", R - 1, R + 1, R - 6, R - 2, 28, 31),
-            StationSpec("S7", R + 1, R - 1, R + 2, R + 6, 22, 25),
-            StationSpec("S8", R - 1, R + 1, R - 6, R - 2, 16, 19),
-            StationSpec("S9", R + 1, R - 1, R + 2, R + 6, 10, 13),
+            StationSpec("S5", R + 1, R - 1, R + 2, R + 6, 34, 37, 33),
+            StationSpec("S6", R - 1, R + 1, R - 6, R - 2, 28, 31, 32),
+            StationSpec("S7", R + 1, R - 1, R + 2, R + 6, 22, 25, 26),
+            StationSpec("S8", R - 1, R + 1, R - 6, R - 2, 16, 19, 20),
+            StationSpec("S9", R + 1, R - 1, R + 2, R + 6, 10, 13, 14),
         )
 
     @property

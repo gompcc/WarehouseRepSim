@@ -666,6 +666,17 @@ def draw_metrics_panel(
                 px + 8, y - 2, PANEL_WIDTH - 16, 16,
             )
             y += 17
+        # Extra pick slots: +1 cart slot at every station (physical layout
+        # change — flipping it rebuilds the world like a pillar move)
+        on = get_layout().extra_slots
+        color = PANEL_GREEN if on else PANEL_TEXT
+        txt = font_sm.render("  Extra pick slots (+1/station)", True, color)
+        surface.blit(txt, (px + 8, y))
+        _draw_toggle_switch(surface, px + PANEL_WIDTH - 44, y - 1, on)
+        toggle_rects["extra_slots"] = pygame.Rect(
+            px + 8, y - 2, PANEL_WIDTH - 16, 16,
+        )
+        y += 17
         # Slotting strategy: clicking cycles to the next arm and RESTARTS
         # the sim (products move, so the world must rebuild)
         from .aisles import get_catalog

@@ -168,6 +168,50 @@ def test_longest_walk_tracks_layout():
 
 
 # ----------------------------------------------------------------------
+# Extra-slot strategy: +1 pick slot per station
+# ----------------------------------------------------------------------
+
+def test_extra_slots_layout():
+    set_layout(HighwayLayout(extra_slots=True))
+    tiles = build_map()
+    graph = build_graph(tiles)
+    lay = get_layout()
+    base = HighwayLayout()
+    for spec in lay.stations:
+        extra = (spec.station_col, spec.extra_row)
+        tile = tiles[extra]
+        assert tile.tile_type == TileType.PICK_STATION
+        assert tile.station_id == spec.sid
+        # S5's extra slot sits ABOVE its column; everyone else's below
+        if spec.sid == "S5":
+            assert spec.extra_row == spec.y0 - 1
+        else:
+            assert spec.extra_row == spec.y1 + 1
+        # Reachable both ways on the one-way loop
+        assert astar(graph, AGV_SPAWN_TILE, extra, tiles=tiles)
+        assert astar(graph, extra, AGV_SPAWN_TILE, tiles=tiles)
+
+    # Capacity follows the live tiles: every S station gains exactly 1
+    from agv_simulation.dispatcher import Dispatcher
+    fill = Dispatcher(tiles).get_station_fill([])
+    set_layout(base)
+    base_fill = Dispatcher(build_map()).get_station_fill([])
+    for sid in (f"S{i}" for i in range(1, 10)):
+        assert fill[sid][1] == base_fill[sid][1] + 1
+
+    # Zoning still sound with the shifted station centroids
+    set_layout(HighwayLayout(extra_slots=True))
+    cat = init_catalog(build_map())
+    assert sum(len(v) for v in cat.station_skus.values()) == NUM_SKUS
+
+
+def test_move_pillar_preserves_extra_slots():
+    lay = HighwayLayout(extra_slots=True)
+    assert lay.move_pillar("left", 20).extra_slots is True
+    assert lay.move_pillar("right", 60).extra_slots is True
+
+
+# ----------------------------------------------------------------------
 # Headless smoke on a moved layout
 # ----------------------------------------------------------------------
 
