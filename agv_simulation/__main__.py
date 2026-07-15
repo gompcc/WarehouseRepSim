@@ -301,7 +301,9 @@ def main() -> None:
 
                 elif event.key == pygame.K_TAB:
                     if agvs:
-                        if selected_agv is None:
+                        # A retired AGV may no longer be in the fleet —
+                        # guard the index or the GUI dies on ValueError
+                        if selected_agv is None or selected_agv not in agvs:
                             selected_agv = agvs[0]
                         else:
                             idx = agvs.index(selected_agv)
@@ -461,7 +463,9 @@ def main() -> None:
                     continue
                 if clicked_toggle == "picker_management":
                     pm = dispatcher.pickers
-                    pm.management = not pm.management
+                    # set_management seeds the review baseline (a bare flag
+                    # flip mid-run spur-hired on the first review)
+                    pm.set_management(not pm.management)
                     state = "ON" if pm.management else "OFF"
                     strategy_events.append(
                         (picks_t_offset + env.sim_elapsed,
@@ -543,15 +547,16 @@ def main() -> None:
                         "horizontally, release to finish", drag_pillar, _gx,
                     )
                     continue
-                # Click an S station (its tiles or racking block) → hire a
-                # picker there. Under the dynamic strategy the newcomer
-                # roams that station's side like any other picker.
+                # Click an S station's RACKING block → hire a picker there.
+                # Slot (PICK_STATION) tiles stay AGV routing targets —
+                # hiring on them shadowed the documented Click=send dropoff
+                # and misclicks hired irreversibly.
                 _tile = tiles.get((mx // TILE_SIZE, my // TILE_SIZE))
                 if (
                     _tile is not None
                     and _tile.station_id
                     and _tile.station_id.startswith("S")
-                    and _tile.tile_type in (TileType.PICK_STATION, TileType.RACKING)
+                    and _tile.tile_type == TileType.RACKING
                 ):
                     sid = _tile.station_id
                     new_picker = env.pickers.add_picker(sid)
@@ -664,6 +669,15 @@ def main() -> None:
                 )
                 cursor_resize = want_resize
 
+        # Fleet retirement can remove the selected AGV — drop the ghost so
+        # the panel and P/R/click commands don't act on a dead unit
+        if selected_agv is not None and selected_agv not in agvs:
+            selected_agv = None
+
+        # Panel content shrinks (alerts clear, AGV deselected): re-clamp
+        # the scroll so the panel can't stay stuck shifted up
+        panel_scroll = min(panel_scroll, panel_max_scroll())
+
         # Compute sim delta (zero when paused)
         sim_dt = dt * time_scale if not paused else 0.0
 
@@ -680,14 +694,18 @@ def main() -> None:
                 agv_constraint_s += sim_dt
                 if agv_constraint_s >= 10.0:
                     agv_constraint_s = 0.0
-                    env.agv_preload_remaining += 1
-                    fleet_n = len(agvs) + env.agv_preload_remaining
+                    # Grow via the fleet TARGET so world rebuilds (pillar
+                    # drags, slotting toggles) reproduce the auto-scaled
+                    # fleet instead of silently resetting it
+                    fleet_target = (fleet_target[0] + 1, fleet_target[1])
+                    env.retarget_fleet(*fleet_target)
                     strategy_events.append(
-                        (picks_t_offset + env.sim_elapsed, f"+AGV ({fleet_n})")
+                        (picks_t_offset + env.sim_elapsed,
+                         f"+AGV ({fleet_target[0]})")
                     )
                     logger.info(
                         "[AutoScale] AGVs constrained 10s → +1 AGV (fleet %d)",
-                        fleet_n,
+                        fleet_target[0],
                     )
             else:
                 agv_constraint_s = 0.0

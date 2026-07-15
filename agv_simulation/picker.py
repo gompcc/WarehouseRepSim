@@ -428,6 +428,18 @@ class PickerManager:
                     " lines/hr)", sid, crew - 1, demand_hr,
                 )
 
+    def set_management(self, on: bool) -> None:
+        """Toggle auto-staffing. Seeds the review baseline from the current
+        counters — flipping ON mid-run must not read every pick since world
+        start as one window's demand (that inflated the first review ~17x
+        and spur-hired at up to all nine stations)."""
+        self.management = on
+        self._manage_timer = 0.0
+        self._manage_last_picks = {
+            sid: float(s["picks_done"])
+            for sid, s in self.station_stats.items()
+        }
+
     def _release_idle_picker(self, sid: str) -> bool:
         """Retire one idle, cart-less picker from *sid*'s crew (never the
         last one). Returns False when none can be released safely yet."""
@@ -551,6 +563,16 @@ class PickerManager:
             serving = picker.state != Picker.IDLE
             had_cart = picker.cart
             result = picker.update(dt)
+            if picker.station_id != sid:
+                # Relocation completed — re-home the crew membership so
+                # management reviews, releases and per-station stats all
+                # see the LIVE crew, not the hire-time one (stale crews
+                # made busy_fraction exceed 1.0 and released pickers from
+                # the wrong station).
+                if picker in self.pickers.get(sid, []):
+                    self.pickers[sid].remove(picker)
+                    self.pickers[picker.station_id].append(picker)
+                sid = picker.station_id
             if serving:
                 self.busy_seconds += dt
                 self.station_stats[sid]["busy_seconds"] += dt

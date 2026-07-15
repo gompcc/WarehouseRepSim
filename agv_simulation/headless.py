@@ -24,11 +24,13 @@ logger = logging.getLogger(__name__)
 
 def _reset_id_counters() -> None:
     """Reset class-level ID counters so each headless run starts fresh."""
+    from .picker import Picker
     AGV._next_id = 1
     Cart._next_id = 1
     Order._next_id = 1
     Order.sizes = []
     Job._next_id = 1
+    Picker._next_id = 1
 
 
 def run_headless(
@@ -204,6 +206,7 @@ def run_headless(
         "picker_strategy": picker_strategy,
         "highway": (layout.left_col, layout.right_col),
         "extra_slots": layout.extra_slots,
+        "picker_management": picker_management,
         "order_book": order_book,
         "completed_orders": completed,
         "orders_per_hour": orders_per_hour,
@@ -226,7 +229,8 @@ def run_headless(
         import os
         os.makedirs(os.path.dirname(results_json) or ".", exist_ok=True)
         metadata_keys = ("num_agvs", "num_carts", "seed", "strategies",
-                        "slotting", "picker_strategy", "sim_duration",
+                        "slotting", "picker_strategy", "picker_management",
+                        "highway", "extra_slots", "sim_duration",
                         "total_ticks", "wall_clock_seconds")
         payload = {
             "metadata": {k: result[k] for k in metadata_keys},

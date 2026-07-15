@@ -71,8 +71,14 @@ def test_dynamic_relocates_to_backlog_on_own_side():
     _run(manager, carts)
     assert manager.relocations >= 1
     assert manager.relocation_seconds > 0.0
-    s1_picker = manager.pickers["S1"][0]
-    assert s1_picker.station_id == "S3"  # relocated and stayed
+    # Helpers relocated, stayed, and were RE-HOMED into S3's live crew
+    # (the whole idle outer pool may converge on the backlog)
+    assert len(manager.pickers["S3"]) >= 2
+    assert len(manager.pickers["S1"]) == 0
+    assert len(manager.all_pickers()) == 9  # nobody lost in re-homing
+    # Crew lists always match live station_id (management/stats depend on it)
+    for sid, crew in manager.pickers.items():
+        assert all(p.station_id == sid for p in crew)
     # Both carts fully served, none left early
     assert manager.carts_served == 2
     assert manager.carts_left_early == 0
@@ -108,10 +114,14 @@ def test_outer_pool_shares_across_the_track():
     # concurrent cart needs a west picker to cross
     carts = [_picking_cart(tiles, "S9", i) for i in range(4)]
     _run(manager, carts)
-    west_crew = [p for sid in ("S1", "S3") for p in manager.pickers[sid]]
-    assert any(p.station_id in ("S5", "S7", "S9") for p in west_crew), (
-        "no west picker crossed to help the east backlog"
-    )
+    # Crossed helpers re-home into east crews: live east headcount grew
+    # beyond the three east-hired pickers
+    east_live = [
+        p for p in manager.all_pickers()
+        if p.station_id in ("S5", "S7", "S9")
+    ]
+    assert len(east_live) > 3, "no west picker crossed to help the east backlog"
+    assert manager.relocation_seconds > 0.0
 
 
 def test_cross_track_distance_is_the_outside_detour():
@@ -165,9 +175,13 @@ def test_added_picker_roams_when_dynamic():
     carts = [_picking_cart(tiles, "S5", i) for i in range(3)]
     _run(manager, carts)
     assert manager.carts_served == 3
-    # The hired picker (2nd in S9's crew) must have relocated within east
-    hired = manager.pickers["S9"][1]
-    assert hired.station_id in ("S5", "S7", "S9")
+    assert len(manager.all_pickers()) == 10  # nobody lost in re-homing
+    # Everyone stays in the outer/central pool they belong to, and crew
+    # lists track live station_id
+    for sid, crew in manager.pickers.items():
+        for p in crew:
+            assert p.station_id == sid
+            assert (sid in OUTER) == (p.station_id in OUTER)
 
 
 def test_one_order_shared_by_many_pickers():
@@ -227,6 +241,20 @@ def test_picker_management_scales_crew_up_and_down():
             break
     assert len(manager.pickers["S3"]) == 1
     assert manager.managed_releases >= 1
+
+
+def test_management_toggle_mid_run_does_not_spur_hire():
+    """Regression: flipping management ON mid-session must seed the review
+    baseline — otherwise the first review reads every pick since world
+    start as one window's demand and hires everywhere."""
+    tiles = _world()
+    manager = PickerManager(tiles)  # management off
+    carts = [_picking_cart(tiles, "S3", 0), _picking_cart(tiles, "S3", 1)]
+    _run(manager, carts)            # accumulate real picks first
+    manager.set_management(True)
+    for _ in range(3100):           # one full review interval, zero demand
+        manager.update(0.1, [])
+    assert manager.managed_hires == 0, "spur-hire on stale pick counters"
 
 
 def test_dynamic_relocation_takes_real_time():

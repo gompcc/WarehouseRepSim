@@ -394,74 +394,6 @@ def draw_cart(
     surface.blit(id_text, id_rect)
 
 
-def draw_ui(
-    surface: pygame.Surface,
-    font: pygame.font.Font,
-    agvs: list[AGV],
-    selected_agv: AGV | None,
-    time_scale: float = 1.0,
-    carts: list[Cart] | None = None,
-    dispatcher: Dispatcher | None = None,
-) -> None:
-    """Draw status text in bottom-left corner."""
-    lines: list[str] = []
-    cart_count = len(carts) if carts else 0
-    disp_info = ""
-    if dispatcher:
-        disp_info = (
-            f"  |  Jobs: {len(dispatcher.pending_jobs)} pending, "
-            f"{len(dispatcher.active_jobs)} active  |  "
-            f"Orders completed: {dispatcher.completed_orders}"
-        )
-    lines.append(
-        f"AGVs: {len(agvs)}  Carts: {cart_count}  |  Speed: {time_scale}x  |  "
-        f"A=spawn  C=cart  P=pickup  R=return  TAB=cycle{disp_info}"
-    )
-    if selected_agv:
-        sid = selected_agv.agv_id
-        st = selected_agv.state.value
-        pos = selected_agv.pos
-        tgt = selected_agv.target
-        carrying = (
-            f"  carrying=C{selected_agv.carrying_cart.cart_id}"
-            if selected_agv.carrying_cart
-            else ""
-        )
-        timer_str = ""
-        if selected_agv.state in (AGVState.PICKING_UP, AGVState.DROPPING_OFF):
-            timer_str = f"  timer={selected_agv.action_timer:.1f}s"
-        if selected_agv.is_blocked:
-            timer_str += f"  BLOCKED {selected_agv.blocked_timer:.1f}s"
-        job_str = ""
-        if selected_agv.current_job:
-            job_str = f"  job={selected_agv.current_job.job_type.value}"
-        lines.append(
-            f"Selected: AGV {sid}  state={st}  pos={pos}  target={tgt}"
-            f"{carrying}{timer_str}{job_str}"
-        )
-        if selected_agv.carrying_cart and selected_agv.carrying_cart.order:
-            cart = selected_agv.carrying_cart
-            order = cart.order
-            ns = order.next_station()
-            next_str = f"S{ns}" if ns else "all picked"
-            lines.append(
-                f"  Cart C{cart.cart_id} Order #{order.order_id}: lines={order.lines}  "
-                f"next={next_str}  timer={cart.process_timer:.1f}s"
-            )
-    else:
-        lines.append("No AGV selected")
-
-    y = MAP_HEIGHT - 10 - len(lines) * 18
-    for line in lines:
-        txt = font.render(line, True, (0, 0, 0))
-        bg_rect = txt.get_rect(topleft=(10, y))
-        bg_rect.inflate_ip(8, 4)
-        pygame.draw.rect(surface, (255, 255, 255, 200), bg_rect)
-        pygame.draw.rect(surface, (100, 100, 100), bg_rect, 1)
-        surface.blit(txt, (10, y))
-        y += 18
-
-
 def _draw_toggle_switch(
     surface: pygame.Surface, x: int, y: int, on: bool,
 ) -> pygame.Rect:
@@ -842,7 +774,9 @@ def _draw_station_load_bars(
         for s in getattr(order, "stations_to_visit", ()):
             if s not in order.completed_stations:
                 load[s] += 1
-    caps = {i: STATIONS.get(f"S{i}", 0) for i in range(1, 10)}
+    from .layout import get_layout
+    extra = 1 if get_layout().extra_slots else 0
+    caps = {i: STATIONS.get(f"S{i}", 0) + extra for i in range(1, 10)}
     pk = picker_counts or {}
     title = font.render("backlog | cap – | pickers ●", True, PANEL_HEADER)
     surface.blit(title, (rect.x, rect.y - 14))
@@ -1034,9 +968,11 @@ def draw_throughput_strip(
     # sit on a dark backing so they stay legible over the curves.
     drawn = 0
     for t_ev, label in (strategy_events or []):
-        if t_ev <= 0 or t_ev > x_max:
+        if t_ev <= 0:
             continue
-        ex = gx + int(gw * t_ev / x_max)
+        # Events land between the 60s samples that set x_max — clamp to
+        # the right edge so a fresh toggle's marker shows immediately
+        ex = gx + int(gw * min(t_ev / x_max, 1.0))
         pygame.draw.line(surface, PANEL_YELLOW, (ex, gy), (ex, gy + gh))
         ev_txt = font_sm.render(label, True, PANEL_YELLOW)
         ey = gy - 1 + (drawn % 4) * 13  # inside the plot: clear of the title
@@ -1280,8 +1216,13 @@ def render(
         walk_history=walk_history,
     )
 
-    return draw_metrics_panel(
-        screen, font_sm, font_md, agvs or [], carts or [],
-        dispatcher, sim_elapsed, time_scale, paused, auto_spawn,
-        selected_agv=selected_agv, scroll=panel_scroll,
-    )
+    try:
+        return draw_metrics_panel(
+            screen, font_sm, font_md, agvs or [], carts or [],
+            dispatcher, sim_elapsed, time_scale, paused, auto_spawn,
+            selected_agv=selected_agv, scroll=panel_scroll,
+        )
+    finally:
+        # The panel scroll-clips the screen; never leave the clip installed
+        # if a live-stats call inside raises
+        screen.set_clip(None)

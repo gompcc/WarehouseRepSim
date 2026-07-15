@@ -75,7 +75,7 @@ def draw_picker_info(
     lines = [
         f"PICKERS ({manager.strategy}"
         f"{', gating' if manager.gating else ', shadow'})",
-        f"{len(manager.all_pickers())} pickers (click a station to add)"
+        f"{len(manager.all_pickers())} pickers (click station racking to add)"
         f" · {PICKER_WALK_SPEED} m/s",
         lines_order,
         pick_cycle,
