@@ -134,15 +134,22 @@ def main() -> None:
 
     def restart_world(new_slotting: str, keep_events: bool = False) -> None:
         """Throw away the live world and rebuild it (same seed + fleet
-        target) under the current slotting and highway layout."""
+        target) under the current slotting and highway layout. Hired
+        picker crews carry over: each station keeps its headcount, like
+        the AGV/cart fleet target does."""
         nonlocal env, dispatcher, tiles, graph, agvs, carts, selected_agv
         nonlocal strategy_events, agv_constraint_s, last_sample_t
         spawn_enabled = env.spawn_enabled
+        crew = {sid: len(ps) for sid, ps in env.pickers.pickers.items()}
         env, dispatcher = _build_world(
             new_slotting, dispatcher.strategies, env.pickers.strategy,
             fleet_target,
         )
         env.spawn_enabled = spawn_enabled
+        for sid, n in crew.items():
+            if sid in env.pickers.pickers:
+                for _ in range(n - len(env.pickers.pickers[sid])):
+                    env.pickers.add_picker(sid)
         tiles, graph = env.tiles, env.graph
         agvs, carts = env.agvs, env.carts
         selected_agv = None       # belonged to the old world
