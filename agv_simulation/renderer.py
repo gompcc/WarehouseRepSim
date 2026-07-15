@@ -79,6 +79,10 @@ def draw_zone_borders(surface: pygame.Surface) -> None:
 # static per run, so the ~2000 tiny labels render once per world build.
 _sku_overlay: tuple[int, pygame.Surface] | None = None
 
+# Large numeral font for the total-picker readout (lazy: font module must
+# be initialised first)
+_font_big: pygame.font.Font | None = None
+
 SKU_NUMBER_COLOR = (150, 150, 158)  # light grey
 
 
@@ -952,6 +956,16 @@ def draw_throughput_strip(
         surface, font_sm, carts, pygame.Rect(450, band_y + 22, 480, 96),
         picker_counts=picker_counts, constraint=constraint_name,
     )
+
+    # Big total-picker headcount beside the station chart
+    global _font_big
+    if _font_big is None:
+        _font_big = pygame.font.SysFont("Arial", 40, bold=True)
+    total_pickers = sum((picker_counts or {}).values())
+    n_txt = _font_big.render(str(total_pickers), True, (20, 150, 60))
+    surface.blit(n_txt, (975 - n_txt.get_width() // 2, band_y + 40))
+    cap = font_sm.render("total pickers", True, PANEL_TEXT)
+    surface.blit(cap, (975 - cap.get_width() // 2, band_y + 86))
 
     curves: list[tuple[str, list[tuple[float, float]]]] = []
     for name, series in (picks_history or {}).items():
