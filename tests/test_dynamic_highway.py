@@ -127,6 +127,16 @@ def test_moved_layout_catalog_zones(left, right):
     assert set(longest) == set(cat.station_skus)
     assert all(d > 0 for d in longest.values())
 
+    # Popularity-weighted mean pick-cycle time per station (map label):
+    # positive, below the station's own worst case, plausible magnitude
+    # (whole-catalog calibration is mean 30 s)
+    avg = cat.station_avg_walk_s()
+    assert set(avg) == set(cat.station_skus)
+    from agv_simulation.aisles import walk_time_seconds
+    for sid, v in avg.items():
+        assert 0 < v <= walk_time_seconds(longest[sid])
+        assert 5.0 < v < 120.0
+
 
 def test_products_follow_aisle_length():
     """Moving the left pillar west shrinks the west bank and grows the
@@ -148,10 +158,13 @@ def test_products_follow_aisle_length():
 
 def test_longest_walk_tracks_layout():
     tiles, _ = _build_world(23, 52)
-    base = init_catalog(tiles).longest_walk_m()
+    cat = init_catalog(tiles)
+    base, base_avg = cat.longest_walk_m(), cat.station_avg_walk_s()
     tiles, _ = _build_world(18, 60)
-    moved = init_catalog(tiles).longest_walk_m()
+    cat = init_catalog(tiles)
+    moved, moved_avg = cat.longest_walk_m(), cat.station_avg_walk_s()
     assert base != moved
+    assert base_avg != moved_avg
 
 
 # ----------------------------------------------------------------------

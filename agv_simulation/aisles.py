@@ -338,6 +338,24 @@ class Catalog:
             }
         return self._longest_walk
 
+    def station_avg_walk_s(self) -> dict[str, float]:
+        """Popularity-weighted mean pick-cycle time (s) per station: the
+        expected calibrated walk+handle time of one pick there, weighting
+        each zoned SKU by its order popularity — the per-station analogue
+        of ``demand_weighted_walk_m``. Shown on the map (``μNNs``). Cached."""
+        if not hasattr(self, "_station_avg_walk"):
+            out: dict[str, float] = {}
+            for sid, skus in self.station_skus.items():
+                total_w = 0.0
+                total_t = 0.0
+                for sku in skus:
+                    w = self.weights[sku]
+                    total_w += w
+                    total_t += w * walk_time_seconds(self.walk_distance(sid, sku))
+                out[sid] = total_t / total_w if total_w else 0.0
+            self._station_avg_walk = out
+        return self._station_avg_walk
+
     def calibration_stats(self) -> dict:
         """Distribution of calibrated round-trip walk times per pick over
         every (station, zoned SKU) pair. Cached; used by the GUI and tests."""

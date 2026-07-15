@@ -238,25 +238,26 @@ def draw_labels(
     ts = TILE_SIZE
 
     # S-station labels ride the highway pillars (dynamic layout): name and
-    # capacity centred on the station's racking block, plus the longest
-    # one-way pick walk a picker at that station can be sent on.
+    # capacity centred on the station's racking block, plus the station's
+    # popularity-weighted mean pick-cycle time (expected walk for one pick
+    # there, weighted by SKU order popularity).
     from .aisles import get_catalog
     from .layout import get_layout
     try:
-        longest_walk = get_catalog().longest_walk_m()
+        avg_walk = get_catalog().station_avg_walk_s()
     except Exception:
-        longest_walk = {}
+        avg_walk = {}
     for s in get_layout().stations:
         cx = int((s.rack_x0 + s.rack_x1) / 2 * ts + ts / 2)
         row = (s.y0 + s.y1) // 2
         label(s.sid, cx, row * ts + ts // 2, font_md)
         capacity_label(s.sid, cx, (row + 1) * ts + ts // 2)
-        walk = longest_walk.get(s.sid)
+        walk = avg_walk.get(s.sid)
         if walk is not None:
             # Below the capacity line; drop one more row when the ETA
             # forecast (drawn by capacity_label) occupies that spot.
             dy = 2 if (eta_forecast and s.sid in eta_forecast) else 1
-            wtxt = font_sm.render(f"≤{walk:.0f}m", True, (90, 60, 160))
+            wtxt = font_sm.render(f"μ{walk:.0f}s", True, (90, 60, 160))
             wr = wtxt.get_rect(center=(cx, (row + 1 + dy) * ts + ts // 2))
             wbg = wr.inflate(6, 2)
             pygame.draw.rect(surface, LABEL_BG, wbg)
