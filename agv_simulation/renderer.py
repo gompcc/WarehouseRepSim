@@ -86,29 +86,31 @@ def draw_sku_numbers(surface: pygame.Surface) -> None:
     """Light-grey SKU ids at their rack slots so any slotting strategy can
     be visually verified (SKU id = popularity rank; 1 is hottest).
 
-    Each rack tile holds two rack levels per face — the hotter (lower) SKU
-    of the pair is shown: N-face label in the tile's top half, S-face in
-    the bottom half."""
+    Only SKU 1 and every 10th SKU are labelled — a full 2000-label overlay
+    is unreadable at this tile size; a sparse sample still shows where each
+    popularity band lives. N-face labels sit in the tile's top half,
+    S-face in the bottom half. The overlay is cached per catalog BUILD
+    (``catalog_id``, not ``id()`` — freed addresses get reused, which left
+    stale numbers on screen after a pillar drag or slotting toggle)."""
     global _sku_overlay
     from .aisles import get_catalog
     try:
         cat = get_catalog()
     except Exception:
         return
-    if _sku_overlay is None or _sku_overlay[0] != id(cat):
+    if _sku_overlay is None or _sku_overlay[0] != cat.catalog_id:
         font_xs = pygame.font.SysFont("Arial", 9)
         overlay = pygame.Surface((MAP_WIDTH, MAP_HEIGHT), pygame.SRCALPHA)
-        best: dict[tuple[int, int, str], int] = {}  # (col, run_row, face) -> hottest sku
         for sku, slot in cat.slots.items():
-            key = (int(round(slot.x)), slot.run_row, slot.face)
-            if sku < best.get(key, 1 << 30):
-                best[key] = sku
-        for (col, run_row, face), sku in best.items():
+            if sku != 1 and sku % 10:
+                continue
             txt = font_xs.render(str(sku), True, SKU_NUMBER_COLOR)
-            x = col * TILE_SIZE + (TILE_SIZE - txt.get_width()) // 2
-            y = run_row * TILE_SIZE + (1 if face == "N" else TILE_SIZE - txt.get_height() + 1)
+            x = int(round(slot.x)) * TILE_SIZE + (TILE_SIZE - txt.get_width()) // 2
+            y = slot.run_row * TILE_SIZE + (
+                1 if slot.face == "N" else TILE_SIZE - txt.get_height() + 1
+            )
             overlay.blit(txt, (x, y))
-        _sku_overlay = (id(cat), overlay)
+        _sku_overlay = (cat.catalog_id, overlay)
     surface.blit(_sku_overlay[1], (0, 0))
 
 

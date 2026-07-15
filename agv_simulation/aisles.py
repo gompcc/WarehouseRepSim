@@ -137,7 +137,11 @@ def _fibonacci_shells(total: int) -> list[int]:
 class Catalog:
     """The 2000-SKU catalog: locations, slotting, zoning, walk distances."""
 
+    _build_seq = 0  # unique per-build id (id() reuse would alias caches)
+
     def __init__(self, tiles: dict, slotting: str = "sequential") -> None:
+        Catalog._build_seq += 1
+        self.catalog_id = Catalog._build_seq
         if slotting not in SLOTTING_STRATEGIES:
             raise ValueError(
                 f"unknown slotting {slotting!r}; pick one of {SLOTTING_STRATEGIES}"
