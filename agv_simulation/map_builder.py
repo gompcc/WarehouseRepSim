@@ -194,7 +194,14 @@ def build_graph(
         if (x, y) in junctions:
             return junctions[(x, y)]
         if y == 7 and 15 <= x <= L - 1:
-            return [(1, 0)]
+            dirs = [(1, 0)]
+            if 29 <= x <= 36 or 63 <= x <= 66:
+                # Box Depot / Pack-off entries must exist on WHICHEVER side
+                # of the left pillar they end up (L > 29 puts depot columns
+                # in this eastbound stretch; without the north exit the
+                # depot is unreachable and the sim gridlocks at 0 orders)
+                dirs.append((0, -1))
+            return dirs
         if y == 8 and 15 <= x <= L - 1:
             # Westbound return lane may merge north into the eastbound lane
             # (and from there sidetrack into the spawn area). Without the

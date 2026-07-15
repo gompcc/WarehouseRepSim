@@ -205,6 +205,23 @@ def test_extra_slots_layout():
     assert sum(len(v) for v in cat.station_skus.values()) == NUM_SKUS
 
 
+@pytest.mark.parametrize("left,right", [(34, 60), (53, 70)])
+def test_depot_reachable_with_left_pillar_right_of_depot(left, right):
+    """Regression: with L > 29 the Box Depot columns sit in the eastbound
+    row-7 stretch, which must still offer the north exit — otherwise AGVs
+    can never enter the depot and the sim gridlocks at 0 orders."""
+    tiles, graph = _build_world(left, right)
+    depot_parking = sorted(
+        pos for pos, t in tiles.items()
+        if t.station_id == "Box_Depot" and t.tile_type == TileType.PARKING
+    )
+    assert depot_parking
+    for pos in depot_parking:
+        assert astar(graph, AGV_SPAWN_TILE, pos, tiles=tiles), (
+            f"depot tile {pos} unreachable at L={left}, R={right}"
+        )
+
+
 def test_move_pillar_preserves_extra_slots():
     lay = HighwayLayout(extra_slots=True)
     assert lay.move_pillar("left", 20).extra_slots is True
