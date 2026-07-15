@@ -1015,14 +1015,24 @@ def draw_throughput_strip(
         surface.blit(t_lbl, (tx - t_lbl.get_width() // 2, gy + gh + 4))
         tt += t_step
 
-    # Dispatch-toggle markers (current run's sim times)
+    # Event markers. Labels cycle through four heights (long sessions
+    # collect many markers — same-height labels pile into one smear) and
+    # sit on a dark backing so they stay legible over the curves.
+    drawn = 0
     for t_ev, label in (strategy_events or []):
         if t_ev <= 0 or t_ev > x_max:
             continue
         ex = gx + int(gw * t_ev / x_max)
         pygame.draw.line(surface, PANEL_YELLOW, (ex, gy), (ex, gy + gh))
         ev_txt = font_sm.render(label, True, PANEL_YELLOW)
-        surface.blit(ev_txt, (min(ex + 3, gx + gw - ev_txt.get_width()), gy - 14))
+        ey = gy - 1 + (drawn % 4) * 13  # inside the plot: clear of the title
+        lx = min(ex + 3, gx + gw - ev_txt.get_width())
+        bg = pygame.Rect(
+            lx - 2, ey - 1, ev_txt.get_width() + 4, ev_txt.get_height() + 1,
+        )
+        pygame.draw.rect(surface, PANEL_BG, bg)
+        surface.blit(ev_txt, (lx, ey))
+        drawn += 1
 
     from .metrics import EQUILIBRIUM_SECONDS
 
