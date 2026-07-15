@@ -171,3 +171,19 @@
 - **First attempt failed**: FILL_WEIGHT=120 made ETA *negative* (-2%) — repeated iteration 11's mistake (over-weighting fill vs distance chases empty stations cross-warehouse). Reset to 30 (baseline calibration) → +4.9%. Check lessons before choosing constants.
 - **Map insight (corrects the "one-way loop" story)**: parking/pick columns are bidirectional ladders, so Manhattan is fine *within* a bank; it underprices left↔right cross-bank trips ~2x (banks connect only via top/bottom highways). This is why directed-distance ETA scoring beats Manhattan scoring.
 - **Key insight**: predicting *departures* (cart finishing picks + haul-away overhead) is the valuable half of ETA scoring — inbound reservations were already counted by the baseline. At station-saturated configs the win comes from routing carts to stations that are about to free up rather than bouncing to the far bank.
+
+## 2026-07-15 — dynamic-highway bug sweep lessons
+- **Golden-diffing only proves the DEFAULT configuration.** Parameterizing
+  hardcoded geometry passed a byte-identical golden check yet still broke
+  layouts where a range-conditioned rule (depot north exits, 29≤x≤36) fell
+  on the other side of the moved parameter — the eastbound lane never got
+  the exits the westbound lane had. When a constant becomes a variable,
+  re-derive EVERY rule keyed to ranges it can cross, and stress-test the
+  parameter's extremes (L=53/R=70 gridlocked at 0 orders), not just the
+  default.
+- **Mutable identity needs one source of truth.** Pickers re-homing
+  (station_id) while crew lists stayed keyed by hire station silently
+  corrupted management reviews and per-station stats (busy_fraction > 1.0).
+  If an entity's home can change, membership structures must move with it.
+- **Feature toggles that read cumulative counters must seed a baseline at
+  flip time** (management ON mid-run divided all-picks-ever by one window).
