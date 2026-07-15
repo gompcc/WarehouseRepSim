@@ -135,20 +135,30 @@ def main() -> None:
     # most recent major change was).
     picks_t_offset: float = 0.0
     picks_n_offset: float = 0.0
+    picks_w_offset: float = 0.0   # cumulative walk-seconds across rebuilds
     restart_marks: list[tuple[float, str]] = [(0.0, "sequential")]
+    # Session-continuous (t, cum picks, cum walk-seconds) — feeds the pink
+    # rolling mean-walk-time line on the strip's second y-axis.
+    walk_history: list[tuple[float, float, float]] = []
 
     def bank_curve() -> None:
         """Pin the live curve's final point and bank the old world's time
         and picks into the session offsets (call just before a rebuild)."""
-        nonlocal picks_t_offset, picks_n_offset
+        nonlocal picks_t_offset, picks_n_offset, picks_w_offset
         cur = env.catalog.slotting
         if env.sim_elapsed > 0:
             picks_history.setdefault(cur, []).append((
                 picks_t_offset + env.sim_elapsed,
                 picks_n_offset + float(env.pickers.picks_done),
             ))
+            walk_history.append((
+                picks_t_offset + env.sim_elapsed,
+                picks_n_offset + float(env.pickers.picks_done),
+                picks_w_offset + env.pickers.walk_seconds_total,
+            ))
         picks_t_offset += env.sim_elapsed
         picks_n_offset += float(env.pickers.picks_done)
+        picks_w_offset += env.pickers.walk_seconds_total
 
     def apply_layout(new_layout: HighwayLayout, label: str | None = None) -> None:
         """Install a highway layout and rebuild the world with curve
@@ -683,6 +693,11 @@ def main() -> None:
                     picks_t_offset + env.sim_elapsed,
                     picks_n_offset + float(env.pickers.picks_done),
                 ))
+                walk_history.append((
+                    picks_t_offset + env.sim_elapsed,
+                    picks_n_offset + float(env.pickers.picks_done),
+                    picks_w_offset + env.pickers.walk_seconds_total,
+                ))
                 last_sample_t = env.sim_elapsed
 
         toggle_rects = render(
@@ -696,6 +711,7 @@ def main() -> None:
             drag_pillar=drag_pillar,
             restart_marks=restart_marks,
             panel_scroll=panel_scroll,
+            walk_history=walk_history,
         )
         pygame.display.flip()
 

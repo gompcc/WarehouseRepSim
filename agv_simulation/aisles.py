@@ -43,7 +43,6 @@ Scale: 1 tile = METERS_PER_TILE metres; distances returned are in metres.
 from __future__ import annotations
 
 import logging
-import math
 from dataclasses import dataclass
 
 from .enums import TileType
@@ -108,10 +107,12 @@ class Slot:
 
 
 def sku_weight(sku: int) -> float:
-    """Demand weight of a SKU: bell-shaped (half-normal) over popularity
-    rank. SKU 1 is hottest; SKU NUM_SKUS is ~e^-4.5 ≈ 1/90th as frequent."""
-    z = 3.0 * (sku - 1) / max(NUM_SKUS - 1, 1)
-    return math.exp(-0.5 * z * z)
+    """Demand weight of a SKU — FLAT (user spec 2026-07-15): every product
+    is equally likely to appear on an order, so demand is even across the
+    2000 locations while each order stays random. (Previously half-normal
+    over popularity rank; SKU id remains the rank/sort key the slotting
+    strategies order by.)"""
+    return 1.0
 
 
 def _ring_distance(x: float, y: float) -> float:

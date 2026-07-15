@@ -97,7 +97,8 @@ PICK_GRAB_TIME      = 0.0    # grab is folded into the calibrated pick-cycle
 PICKS_PER_VISIT_MEAN = 4.0   # shadow-mode fallback: lines sampled for a cart…
 PICKS_PER_VISIT_SD   = 2.0   # …without an order (GUI-spawned), max(1, round(N))
 ORDER_LINES_MEAN     = 20.0  # lines per order: max(1, round(N(mean, sd))),
-ORDER_LINES_SD       = 9.0   # sampled popularity-weighted in SKU space
+ORDER_LINES_SD       = 9.0   # SKUs sampled uniformly (flat demand,
+                             # user spec 2026-07-15) in SKU space
 CART_COLOR_PROCESSING = (255, 165, 0)   # orange
 CART_COLOR_WAITING    = (180, 100, 255) # purple — buffered, waiting for station
 CART_COLOR_COMPLETED  = (200, 50, 50)   # red

@@ -7,12 +7,12 @@ fact of the book, not a property of a random stream. The canonical book is
 **15 hours of real demand at 3,000 lines/hr ≈ 45,000 lines** (~2,250
 orders).
 
-Distributions (as previously specified):
+Distributions:
 - Order size: ``max(1, round(N(ORDER_LINES_MEAN=20, ORDER_LINES_SD=9)))``
   distinct lines per order.
-- Product frequency: the half-normal popularity curve over SKU rank
-  (``aisles.sku_weight`` — SKU 1 hottest, ~90x SKU 2000), i.e. normally
-  distributed frequency over the ranked catalog.
+- Product frequency: FLAT (user spec 2026-07-15) — every SKU equally
+  likely (``aisles.sku_weight`` returns 1.0), so demand is even across
+  the 2000 products while each order stays random.
 
 The book lives in SKU space (no catalog/placement involved), so it is
 identical across slotting arms by construction. It is generated once from
@@ -39,6 +39,10 @@ BOOK_SEED = 20260714
 LINES_PER_HOUR = 3000
 HOURS = 15
 TOTAL_LINES = LINES_PER_HOUR * HOURS  # 45,000
+
+# Stamped into the book's metadata; a cached book generated under a
+# different demand model regenerates automatically on load.
+POPULARITY = "flat (uniform over SKUs; user spec 2026-07-15)"
 
 _DATA_DIR = os.path.join(os.path.dirname(os.path.dirname(os.path.abspath(__file__))), "data")
 BOOK_PATH = os.path.join(_DATA_DIR, "order_book.json")
@@ -91,11 +95,13 @@ def sku_frequencies(book: list[list[int]]) -> dict[int, int]:
 
 def ensure_order_book(path: str = BOOK_PATH) -> list[list[int]]:
     """Load the canonical book, generating and persisting it on first use
-    (both the book and its frequency table)."""
+    (both the book and its frequency table). A cached book built under a
+    different demand model (metadata popularity mismatch) regenerates."""
     if os.path.exists(path):
         with open(path) as f:
             payload = json.load(f)
-        return payload["orders"]
+        if payload.get("metadata", {}).get("popularity") == POPULARITY:
+            return payload["orders"]
     book = generate_order_book()
     os.makedirs(os.path.dirname(path), exist_ok=True)
     payload = {
@@ -106,7 +112,7 @@ def ensure_order_book(path: str = BOOK_PATH) -> list[list[int]]:
             "total_lines": sum(len(o) for o in book),
             "orders": len(book),
             "order_size": f"max(1, round(N({ORDER_LINES_MEAN}, {ORDER_LINES_SD})))",
-            "popularity": "half-normal over SKU rank (aisles.sku_weight)",
+            "popularity": POPULARITY,
         },
         "orders": book,
     }

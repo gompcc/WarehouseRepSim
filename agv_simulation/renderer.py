@@ -16,7 +16,7 @@ from .constants import (
     PANEL_GREEN, PANEL_YELLOW, PANEL_RED,
     NORTH_HWY_ROW, EAST_HWY_ROW, NUM_SKUS,
 )
-from .metrics import rolling_rate, ROLLING_WINDOW
+from .metrics import rolling_per_event, rolling_rate, ROLLING_WINDOW
 from .models import STATIONS
 from .strategies import STRATEGY_INFO
 
@@ -902,6 +902,7 @@ def draw_throughput_strip(
     agvs=None,
     picker_counts: dict | None = None,
     pickers=None,
+    walk_history: list[tuple[float, float, float]] | None = None,
 ) -> None:
     """Per-slotting picks/hr graph in the strip under the map.
 
@@ -1116,6 +1117,27 @@ def draw_throughput_strip(
         avg_txt = font_sm.render("avg: settling…", True, grey)
     surface.blit(avg_txt, (gx + gw + 6, gy + 18))
 
+    # PINK second axis: rolling mean walk time per pick (all pickers).
+    # Own 0..max scale on the right — reads congestion/slotting quality
+    # against the same timeline as the rate curve.
+    pink = (255, 120, 190)
+    wpts = [
+        (t, v) for t, v in rolling_per_event(walk_history or [])
+        if t <= x_max
+    ]
+    if len(wpts) >= 2:
+        w_max = max(v for _, v in wpts) * 1.15
+        points = [
+            (gx + int(gw * min(t / x_max, 1.0)),
+             gy + gh - int(gh * min(v / w_max, 1.0)))
+            for t, v in wpts
+        ]
+        pygame.draw.lines(surface, pink, False, points, 1)
+        w_lbl = font_sm.render(f"{w_max:.0f}s", True, pink)
+        surface.blit(w_lbl, (gx + gw + 2, gy - 6))
+        w_now = font_sm.render(f"walk: {wpts[-1][1]:.0f}s", True, pink)
+        surface.blit(w_now, (gx + gw + 6, gy + 50))
+
 
 def render(
     screen: pygame.Surface,
@@ -1137,6 +1159,7 @@ def render(
     drag_pillar: str | None = None,
     restart_marks: list[tuple[float, str]] | None = None,
     panel_scroll: int = 0,
+    walk_history: list[tuple[float, float, float]] | None = None,
 ) -> dict[str, pygame.Rect]:
     """Full frame render; returns clickable strategy-toggle hitboxes."""
     screen.fill(BG_COLOR)
@@ -1230,6 +1253,7 @@ def render(
         agvs=agvs,
         picker_counts=picker_counts,
         pickers=pickers,
+        walk_history=walk_history,
     )
 
     return draw_metrics_panel(

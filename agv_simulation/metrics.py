@@ -54,3 +54,26 @@ def rolling_rate(
         rate = (count - base_count) / span * 3600.0 if span > 0 else 0.0
         out.append((t, max(rate, 0.0)))
     return out
+
+
+def rolling_per_event(
+    samples: list[tuple[float, float, float]],
+    window: float = ROLLING_WINDOW,
+) -> list[tuple[float, float]]:
+    """Rolling mean of a per-event quantity from cumulative sums.
+
+    ``samples`` is a chronological list of ``(sim_t, cumulative_events,
+    cumulative_quantity)``. Returns ``(sim_t, quantity_per_event)`` over
+    the trailing ``window``, emitting points only where events occurred
+    (e.g. mean walk seconds per pick for the throughput strip)."""
+    if not samples:
+        return []
+    times = [t for t, _, _ in samples]
+    out: list[tuple[float, float]] = []
+    for i, (t, n, q) in enumerate(samples):
+        j = min(bisect_left(times, t - window), i)
+        n0, q0 = samples[j][1], samples[j][2]
+        dn = n - n0
+        if dn > 0:
+            out.append((t, (q - q0) / dn))
+    return out

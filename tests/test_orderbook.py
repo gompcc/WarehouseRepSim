@@ -38,12 +38,16 @@ def test_book_volume_and_size_distribution(book):
         assert all(1 <= sku <= NUM_SKUS for sku in order)
 
 
-def test_frequency_follows_popularity_curve(book):
+def test_frequency_is_flat_across_skus(book):
+    """Demand is FLAT (user spec 2026-07-15): every SKU equally likely,
+    so the first and last popularity centiles see the same traffic."""
     freq = sku_frequencies(book)
     assert sum(freq.values()) == sum(len(o) for o in book)
     top = sum(freq.get(s, 0) for s in range(1, 101)) / 100
     bottom = sum(freq.get(s, 0) for s in range(1901, 2001)) / 100
-    assert top > 20 * max(bottom, 0.1)  # hot SKUs dominate cold ones
+    assert 0.8 < top / bottom < 1.25, (top, bottom)
+    # ~45k lines over 2000 SKUs -> everything gets ordered at least once
+    assert len(freq) == 2000
 
 
 def test_orders_consume_book_identically_across_arms(book):
