@@ -83,6 +83,9 @@ _sku_overlay: tuple[int, pygame.Surface] | None = None
 # be initialised first)
 _font_big: pygame.font.Font | None = None
 
+# Sticky y-axis maxima for the station bar chart (ratchet, never shrink)
+_bars_y_max: dict[str, float] = {"left": 0.0, "right": 0.0}
+
 SKU_NUMBER_COLOR = (150, 150, 158)  # light grey
 
 
@@ -783,8 +786,18 @@ def _draw_station_load_bars(
     pygame.draw.line(
         surface, PANEL_SEPARATOR, (rect.x, rect.bottom), (rect.right, rect.bottom),
     )
-    left_max = max(max(load.values()), max(caps.values()), 1)
-    right_max = max([pk.get(f"S{i}", 0) for i in range(1, 10)] + [2])
+    # Sticky axes: ratchet up from observed peaks (+20% headroom), never
+    # shrink — per-frame rescaling made the bars jump around
+    _bars_y_max["left"] = max(
+        _bars_y_max["left"],
+        1.2 * max(max(load.values()), max(caps.values()), 1),
+    )
+    _bars_y_max["right"] = max(
+        _bars_y_max["right"],
+        1.2 * max([pk.get(f"S{i}", 0) for i in range(1, 10)] + [2]),
+    )
+    left_max = _bars_y_max["left"]
+    right_max = _bars_y_max["right"]
     bw = rect.w / 9
     dot_color = (20, 150, 60)
     for i in range(1, 10):
@@ -821,10 +834,10 @@ def _draw_station_load_bars(
             lbl, (round(cx + (bw - lbl.get_width()) / 2), rect.bottom + 2),
         )
     # Right axis (pickers) scale: max value at the top in dot color
-    r_lbl = font.render(str(right_max), True, dot_color)
+    r_lbl = font.render(f"{right_max:.0f}", True, dot_color)
     surface.blit(r_lbl, (rect.right + 3, rect.y - 4))
     # Left axis (orders/carts) scale
-    l_lbl = font.render(str(left_max), True, (110, 112, 130))
+    l_lbl = font.render(f"{left_max:.0f}", True, (110, 112, 130))
     surface.blit(l_lbl, (rect.x - l_lbl.get_width() - 3, rect.y - 4))
 
 

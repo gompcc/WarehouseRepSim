@@ -13,7 +13,7 @@ from agv_simulation.map_builder import build_map
 from agv_simulation.aisles import init_catalog
 from agv_simulation.models import Cart
 from agv_simulation.picker import (
-    _NORTH_DETOUR_ROW, _SOUTH_DETOUR_ROW, Picker, PickerManager,
+    _SOUTH_DETOUR_ROW, Picker, PickerManager,
 )
 
 OUTER = {"S1", "S3", "S5", "S7", "S9"}
@@ -124,16 +124,16 @@ def test_outer_pool_shares_across_the_track():
     assert manager.relocation_seconds > 0.0
 
 
-def test_cross_track_distance_is_the_outside_detour():
+def test_cross_track_distance_is_the_south_detour():
+    """West↔east moves ALWAYS go around the south side (user decision
+    2026-07-15) — never straight across, never over the top."""
     tiles = _world()
     manager = PickerManager(tiles, strategy="dynamic")
     (ax, ay) = manager.station_positions["S1"]
     (bx, by) = manager.station_positions["S9"]
-    north = (ay - _NORTH_DETOUR_ROW) + abs(ax - bx) + (by - _NORTH_DETOUR_ROW)
     south = (_SOUTH_DETOUR_ROW - ay) + abs(ax - bx) + (_SOUTH_DETOUR_ROW - by)
-    expected = min(north, south) * METERS_PER_TILE
     got = manager._station_dist_m("S1", "S9")
-    assert got == expected
+    assert got == south * METERS_PER_TILE
     # and it must exceed the (illegal) straight Manhattan line
     manhattan = (abs(ax - bx) + abs(ay - by)) * METERS_PER_TILE
     assert got > manhattan
@@ -142,12 +142,28 @@ def test_cross_track_distance_is_the_outside_detour():
     assert manager._station_dist_m("S1", "S3") == (
         (abs(ax - cx) + abs(ay - cy)) * METERS_PER_TILE
     )
-    # the animation path for a cross move hugs the chosen detour row
+    # the animation path for a cross move hugs the south detour row
     path = manager._relocate_path("S1", "S9")
     assert path is not None
-    rows = {p[1] for p in path[1:3]}
-    assert rows <= {_NORTH_DETOUR_ROW, _SOUTH_DETOUR_ROW}
+    assert {p[1] for p in path[1:3]} == {_SOUTH_DETOUR_ROW}
     assert manager._relocate_path("S1", "S3") is None
+
+
+def test_management_hires_most_overloaded_station_first():
+    """The headcount budget goes to the worst queue, not to whichever
+    station sorts first alphabetically."""
+    tiles = _world()
+    manager = PickerManager(tiles, management=True)
+    # S8 drowning (4 carts), S1 mildly busy (1 cart): first review's first
+    # hire must land on S8 even though S1 sorts earlier
+    carts = [_picking_cart(tiles, "S8", i) for i in range(4)]
+    carts.append(_picking_cart(tiles, "S1", 0))
+    for _ in range(3010):
+        manager.update(0.1, carts)
+    assert manager.managed_hires >= 1
+    assert len(manager.pickers["S8"]) > 1, (
+        "most overloaded station was not staffed first"
+    )
 
 
 def test_added_picker_serves_in_parallel():

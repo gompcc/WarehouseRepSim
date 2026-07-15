@@ -36,12 +36,11 @@ logger = logging.getLogger(__name__)
 
 _PICKER_RNG_SEED = 20260714  # own stream — never touches the global RNG
 
-# Cross-track detour rows for the dynamic OUTER labour pool: a picker moving
+# Cross-track detour row for the dynamic OUTER labour pool: a picker moving
 # between a west and an east station cannot cross the one-way AGV track, so
-# it walks around the outside — over the very top (row 0, above the Box
-# Depot / Pack-off blocks) or under the bottom (the row below the East
-# Highway), whichever is shorter.
-_NORTH_DETOUR_ROW = 0.0
+# it always walks around the SOUTH side (the row below the East Highway —
+# user decision 2026-07-15; the northern route would cross the North
+# Highway lanes and thread the Box Depot / spawn blocks).
 _SOUTH_DETOUR_ROW = float(EAST_HWY_ROW + 1)
 
 # Picker management (auto-staffing) controller. No lookahead simulation:
@@ -228,12 +227,11 @@ class PickerManager:
       serves carts queued there.
     - ``"dynamic"``: two shared labour pools. The OUTER pool (west + east
       stations: S1/S3 and S5/S7/S9 on the classic layout) shares pickers
-      around the OUTSIDE of the AGV track — a west↔east move walks over
-      the top (above the Box Depot) or under the bottom (below the East
-      Highway), whichever is shorter, and that detour costs real time.
-      The CENTRAL pool (S2/S4/S6/S8, the island between the pillars)
-      shares pickers within the middle. Pickers never cross the track
-      itself, and the pools never mix.
+      around the OUTSIDE of the AGV track — a west↔east move always walks
+      around the SOUTH side (below the East Highway), and that detour
+      costs real time. The CENTRAL pool (S2/S4/S6/S8, the island between
+      the pillars) shares pickers within the middle. Pickers never cross
+      the track itself, and the pools never mix.
     """
 
     STRATEGIES = ("static", "dynamic")
@@ -359,32 +357,27 @@ class PickerManager:
         """Walking metres between two station homes.
 
         Same side: Manhattan. West↔east (outer-pool moves): around the
-        outside of the AGV track via the shorter of the top detour (row
-        ``_NORTH_DETOUR_ROW``, above the Box Depot / Pack-off) and the
-        bottom detour (below the East Highway). Pools never mix, so a
-        central↔outer pair is never requested."""
+        SOUTH side of the AGV track (below the East Highway) — always.
+        Pools never mix, so a central↔outer pair is never requested."""
         (ax, ay) = self.station_positions[a]
         (bx, by) = self.station_positions[b]
         sa, sb = self.station_side.get(a), self.station_side.get(b)
         if sa != sb and "central" not in (sa, sb):
-            north = (ay - _NORTH_DETOUR_ROW) + abs(ax - bx) + (by - _NORTH_DETOUR_ROW)
             south = (_SOUTH_DETOUR_ROW - ay) + abs(ax - bx) + (_SOUTH_DETOUR_ROW - by)
-            return min(north, south) * METERS_PER_TILE
+            return south * METERS_PER_TILE
         return (abs(ax - bx) + abs(ay - by)) * METERS_PER_TILE
 
     def _relocate_path(
         self, a: str, b: str,
     ) -> list[tuple[float, float]] | None:
-        """Waypoints for a cross-track (west↔east) relocation, taking the
-        shorter outside detour; ``None`` for same-side moves (straight)."""
+        """Waypoints for a cross-track (west↔east) relocation around the
+        south side; ``None`` for same-side moves (straight)."""
         sa, sb = self.station_side.get(a), self.station_side.get(b)
         if sa == sb or "central" in (sa, sb):
             return None
         (ax, ay) = self.station_positions[a]
         (bx, by) = self.station_positions[b]
-        north = (ay - _NORTH_DETOUR_ROW) + (by - _NORTH_DETOUR_ROW)
-        south = (_SOUTH_DETOUR_ROW - ay) + (_SOUTH_DETOUR_ROW - by)
-        row = _NORTH_DETOUR_ROW if north <= south else _SOUTH_DETOUR_ROW
+        row = _SOUTH_DETOUR_ROW
         return [(ax, ay), (ax, row), (bx, row), (bx, by)]
 
     def _manage_staffing(self, window: float) -> None:
@@ -399,6 +392,7 @@ class PickerManager:
         import math
         avg_cycle = get_catalog().station_avg_walk_s()
         total = sum(len(c) for c in self.pickers.values())
+        reviews: list[tuple[float, str, int, float, float]] = []
         for sid in sorted(self.pickers):
             picks_now = float(self.station_stats[sid]["picks_done"])
             rate_hr = (
@@ -411,21 +405,32 @@ class PickerManager:
             demand_hr = rate_hr + backlog * 3600.0 / MANAGE_DRAIN_S
             target = max(1, math.ceil(demand_hr / (MANAGE_UTIL * per_picker_hr)))
             crew = len(self.pickers[sid])
+            overload = demand_hr / max(crew * per_picker_hr, 1e-6)
+            reviews.append((overload, sid, target, demand_hr, per_picker_hr))
+
+        # Releases first (they free budget), then hires MOST OVERLOADED
+        # first — the headcount budget must go where the queue is worst,
+        # not to whichever station sorts first alphabetically.
+        for _overload, sid, target, demand_hr, _pp in reviews:
+            if target < len(self.pickers[sid]) and self._release_idle_picker(sid):
+                self.managed_releases += 1
+                total -= 1
+                logger.info(
+                    "[Pickers] Management: -1 at %s (crew %d, demand %.0f"
+                    " lines/hr)", sid, len(self.pickers[sid]), demand_hr,
+                )
+        for overload, sid, target, demand_hr, per_picker_hr in sorted(
+            reviews, key=lambda r: -r[0],
+        ):
+            crew = len(self.pickers[sid])
             if target > crew and total < MANAGE_MAX_TOTAL:
                 self.add_picker(sid)
                 self.managed_hires += 1
                 total += 1
                 logger.info(
                     "[Pickers] Management: +1 at %s (crew %d, demand %.0f"
-                    " lines/hr, %.0f lines/hr/picker)",
-                    sid, crew + 1, demand_hr, per_picker_hr,
-                )
-            elif target < crew and self._release_idle_picker(sid):
-                self.managed_releases += 1
-                total -= 1
-                logger.info(
-                    "[Pickers] Management: -1 at %s (crew %d, demand %.0f"
-                    " lines/hr)", sid, crew - 1, demand_hr,
+                    " lines/hr, %.0f lines/hr/picker, load %.2f)",
+                    sid, crew + 1, demand_hr, per_picker_hr, overload,
                 )
 
     def set_management(self, on: bool) -> None:
