@@ -44,6 +44,18 @@ _PICKER_RNG_SEED = 20260714  # own stream — never touches the global RNG
 _NORTH_DETOUR_ROW = 0.0
 _SOUTH_DETOUR_ROW = float(EAST_HWY_ROW + 1)
 
+# Picker management (auto-staffing) controller. No lookahead simulation:
+# staffing is a QUEUEING CONTROL problem — each station's per-picker
+# service rate is known analytically from the catalog (station_avg_walk_s)
+# and its demand is measured live (recent pick rate + queued backlog), so
+# the optimal crew is the classic staffing rule
+#     n = ceil(demand / (MANAGE_UTIL * one_picker_rate)),
+# re-evaluated on a cadence as the environment drifts.
+MANAGE_INTERVAL = 300.0   # sim-s between staffing reviews
+MANAGE_UTIL = 0.85        # target utilization per picker
+MANAGE_DRAIN_S = 600.0    # aim to drain current backlog over ~10 min
+MANAGE_MAX_TOTAL = 30     # total headcount budget across all stations
+
 
 class Picker:
     """One human picker: walks cart → slot → cart, one SKU line per trip."""
@@ -228,6 +240,7 @@ class PickerManager:
 
     def __init__(
         self, tiles: dict[tuple[int, int], Tile], strategy: str = "static",
+        management: bool = False,
     ) -> None:
         if strategy not in PickerManager.STRATEGIES:
             raise ValueError(
@@ -235,6 +248,14 @@ class PickerManager:
                 f"{PickerManager.STRATEGIES}"
             )
         self.strategy = strategy
+        # Picker management (auto-staffing): queueing-control loop that
+        # re-sizes each station's crew from live demand — see the
+        # MANAGE_* constants above for the rule.
+        self.management = management
+        self._manage_timer = 0.0
+        self._manage_last_picks: dict[str, float] = {}
+        self.managed_hires = 0
+        self.managed_releases = 0
         cat = get_catalog()
         self.station_positions = dict(cat.station_pos)
         self.station_side = dict(cat.station_side)
@@ -264,6 +285,7 @@ class PickerManager:
         self.gating = False
 
         # Stats
+        self.sku_picks: dict[int, int] = {}  # per-SKU pick counts (spectrum)
         self.picks_done = 0
         self.carts_served = 0
         self.carts_left_early = 0
@@ -365,6 +387,59 @@ class PickerManager:
         row = _NORTH_DETOUR_ROW if north <= south else _SOUTH_DETOUR_ROW
         return [(ax, ay), (ax, row), (bx, row), (bx, by)]
 
+    def _manage_staffing(self, window: float) -> None:
+        """One staffing review (queueing control, no lookahead simulation).
+
+        Per station: demand = measured pick rate over the last window plus
+        enough extra to drain the current unassigned backlog in
+        ``MANAGE_DRAIN_S``; one picker's service rate comes from the
+        catalog's demand-weighted mean pick-cycle there. Crew moves ONE
+        step per review toward ``ceil(demand / (util_target * service))``
+        — gentle, so a noisy window can't whipsaw the headcount."""
+        import math
+        avg_cycle = get_catalog().station_avg_walk_s()
+        total = sum(len(c) for c in self.pickers.values())
+        for sid in sorted(self.pickers):
+            picks_now = float(self.station_stats[sid]["picks_done"])
+            rate_hr = (
+                (picks_now - self._manage_last_picks.get(sid, 0.0))
+                / window * 3600.0
+            )
+            self._manage_last_picks[sid] = picks_now
+            backlog = sum(len(e[1]) for e in self.queues[sid])
+            per_picker_hr = 3600.0 / max(avg_cycle.get(sid, 30.0), 1e-6)
+            demand_hr = rate_hr + backlog * 3600.0 / MANAGE_DRAIN_S
+            target = max(1, math.ceil(demand_hr / (MANAGE_UTIL * per_picker_hr)))
+            crew = len(self.pickers[sid])
+            if target > crew and total < MANAGE_MAX_TOTAL:
+                self.add_picker(sid)
+                self.managed_hires += 1
+                total += 1
+                logger.info(
+                    "[Pickers] Management: +1 at %s (crew %d, demand %.0f"
+                    " lines/hr, %.0f lines/hr/picker)",
+                    sid, crew + 1, demand_hr, per_picker_hr,
+                )
+            elif target < crew and self._release_idle_picker(sid):
+                self.managed_releases += 1
+                total -= 1
+                logger.info(
+                    "[Pickers] Management: -1 at %s (crew %d, demand %.0f"
+                    " lines/hr)", sid, crew - 1, demand_hr,
+                )
+
+    def _release_idle_picker(self, sid: str) -> bool:
+        """Retire one idle, cart-less picker from *sid*'s crew (never the
+        last one). Returns False when none can be released safely yet."""
+        crew = self.pickers[sid]
+        if len(crew) <= 1:
+            return False
+        for picker in reversed(crew):
+            if picker.state == Picker.IDLE and picker.cart is None:
+                crew.remove(picker)
+                return True
+        return False
+
     def _pick_list(self, cart: Cart, station_id: str) -> list[int]:
         """The SKU lines this cart needs here: the order's *remaining* lines
         (resume-safe after buffering), or a sampled list when orderless."""
@@ -377,6 +452,11 @@ class PickerManager:
 
     def update(self, dt: float, carts: list[Cart]) -> None:
         self.elapsed += dt
+        if self.management:
+            self._manage_timer += dt
+            if self._manage_timer >= MANAGE_INTERVAL:
+                self._manage_staffing(self._manage_timer)
+                self._manage_timer = 0.0
         picking_by_id: dict[int, Cart] = {
             c.cart_id: c
             for c in carts
@@ -477,6 +557,7 @@ class PickerManager:
             if result is not None:
                 done_sku, walk_secs = result
                 self.picks_done += 1
+                self.sku_picks[done_sku] = self.sku_picks.get(done_sku, 0) + 1
                 self.walk_seconds_total += walk_secs
                 self._walk_sum_sq += walk_secs * walk_secs
                 self.station_stats[sid]["picks_done"] += 1
@@ -547,6 +628,9 @@ class PickerManager:
         total_crew_seconds = self.elapsed * sum(len(c) for c in self.pickers.values())
         return {
             "strategy": self.strategy,
+            "management": self.management,
+            "managed_hires": self.managed_hires,
+            "managed_releases": self.managed_releases,
             "picks_done": n,
             "carts_served": self.carts_served,
             "carts_left_early": self.carts_left_early,

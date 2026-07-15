@@ -12,12 +12,14 @@ GRID_ROWS = 40          # 40 rows     (y: 0-39, top to bottom)
 MAP_WIDTH     = GRID_COLS * TILE_SIZE   # 1032 px (map area)
 MAP_HEIGHT    = GRID_ROWS * TILE_SIZE   # 480 px
 PANEL_WIDTH   = 300
-THROUGHPUT_STRIP_H = 160  # live lines/hr graph strip under the map (160:
-                          # tall enough for gridlines + settled-average
-                          # lines, and the full-height panel column gains
-                          # the same 80px so CONSTRAINT is never clipped)
+THROUGHPUT_STRIP_H = 300  # two bands under the map: the full-width
+                          # temporal lines/hr graph on top, and the
+                          # distribution charts (order-size bell, station
+                          # backlog/capacity/pickers) below it. The panel
+                          # column spans the same height, so it gains the
+                          # room too (and scrolls if it ever overflows).
 WINDOW_WIDTH  = MAP_WIDTH + PANEL_WIDTH        # 1332 px total
-WINDOW_HEIGHT = MAP_HEIGHT + THROUGHPUT_STRIP_H  # 640 px
+WINDOW_HEIGHT = MAP_HEIGHT + THROUGHPUT_STRIP_H  # 780 px
 FPS = 30
 
 SPEED_STEPS = [0.5, 1.0, 2.0, 5.0, 10.0, 20.0, 50.0, 100.0, 200.0]

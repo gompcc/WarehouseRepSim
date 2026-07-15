@@ -30,7 +30,7 @@ from .dispatcher import Dispatcher
 from .headless import _reset_id_counters
 from .models import set_order_seed, set_order_book
 from .orderbook import ensure_order_book
-from .renderer import render
+from .renderer import panel_max_scroll, render
 from .strategies import STRATEGY_INFO
 
 logger = logging.getLogger(__name__)
@@ -123,6 +123,7 @@ def main() -> None:
     drag_moved: bool = False
     cursor_resize: bool = False
     can_set_cursor = hasattr(pygame, "SYSTEM_CURSOR_SIZEWE")
+    panel_scroll: int = 0  # mouse-wheel scroll of the right-hand panel
 
     # Throughput-strip continuity across world rebuilds (pillar drags AND
     # slotting toggles): sample times and cumulative pick counts carry
@@ -170,11 +171,13 @@ def main() -> None:
         nonlocal strategy_events, agv_constraint_s, last_sample_t
         spawn_enabled = env.spawn_enabled
         crew = {sid: len(ps) for sid, ps in env.pickers.pickers.items()}
+        management = env.pickers.management
         env, dispatcher = _build_world(
             new_slotting, dispatcher.strategies, env.pickers.strategy,
             fleet_target,
         )
         env.spawn_enabled = spawn_enabled
+        env.pickers.management = management
         for sid, n in crew.items():
             if sid in env.pickers.pickers:
                 for _ in range(n - len(env.pickers.pickers[sid])):
@@ -423,6 +426,24 @@ def main() -> None:
                             target.left_col, target.right_col,
                         )
                     continue
+                if clicked_toggle == "picker_management":
+                    pm = dispatcher.pickers
+                    pm.management = not pm.management
+                    state = "ON" if pm.management else "OFF"
+                    strategy_events.append(
+                        (picks_t_offset + env.sim_elapsed,
+                         f"Picker management {state}")
+                    )
+                    # Major change: new settled-average segment
+                    restart_marks.append((
+                        picks_t_offset + env.sim_elapsed,
+                        f"picker mgmt {state.lower()}",
+                    ))
+                    logger.info(
+                        "[Strategy] Picker management -> %s (t=%.0fs)",
+                        state, env.sim_elapsed,
+                    )
+                    continue
                 if clicked_toggle == "picker_dynamic":
                     pm = dispatcher.pickers
                     pm.strategy = (
@@ -578,6 +599,13 @@ def main() -> None:
                     else:
                         hover_pillar = None
 
+            elif event.type == pygame.MOUSEWHEEL:
+                wx, _wy = pygame.mouse.get_pos()
+                if wx >= MAP_WIDTH:  # wheel over the panel column scrolls it
+                    panel_scroll = max(0, min(
+                        panel_scroll - event.y * 24, panel_max_scroll(),
+                    ))
+
             elif event.type == pygame.MOUSEBUTTONUP and event.button == 1:
                 if drag_pillar is not None:
                     _lay = get_layout()
@@ -648,6 +676,7 @@ def main() -> None:
             hover_pillar=hover_pillar,
             drag_pillar=drag_pillar,
             restart_marks=restart_marks,
+            panel_scroll=panel_scroll,
         )
         pygame.display.flip()
 

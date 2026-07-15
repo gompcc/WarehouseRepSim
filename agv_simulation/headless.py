@@ -48,6 +48,7 @@ def run_headless(
     snapshot_interval: float = 60.0,
     results_json: str | None = None,
     highway: tuple[int, int] | None = None,
+    picker_management: bool = False,
 ) -> dict:
     """Run the simulation without pygame, using a fixed timestep.
 
@@ -97,7 +98,8 @@ def run_headless(
 
     env = Environment(
         event_jsonl=event_jsonl, slotting=slotting,
-        picker_strategy=picker_strategy, layout=layout,
+        picker_strategy=picker_strategy,
+        picker_management=picker_management, layout=layout,
     )
     env.agv_preload_remaining = num_agvs
     env.preload_remaining = num_carts

@@ -196,6 +196,11 @@ class Catalog:
         self.slots: dict[int, Slot] = {}
         self.station_skus: dict[str, list[int]] = {s: [] for s in self.station_pos}
         self.weights: dict[int, float] = {}
+        # sku -> geometric location index (1..NUM_SKUS along the aisles);
+        # the GUI's location spectrum plots pick frequency over this axis
+        self.sku_location_index: dict[int, int] = {
+            sku: loc.index for sku, loc in sku_to_loc.items()
+        }
         for sku, loc in sku_to_loc.items():
             station = self._loc_station[loc.index]
             self.slots[sku] = Slot(

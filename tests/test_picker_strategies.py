@@ -210,6 +210,25 @@ def test_shared_order_completes_faster_with_more_pickers():
     assert crew < solo * 0.6, (solo, crew)  # 3 pickers ≥ ~1.7x faster
 
 
+def test_picker_management_scales_crew_up_and_down():
+    """Auto-staffing (queueing control): a flooded station gains pickers at
+    the next review; an idle one releases them back down to 1."""
+    tiles = _world()
+    manager = PickerManager(tiles, management=True)
+    carts = [_picking_cart(tiles, "S3", i) for i in range(4)]
+    for _ in range(3100):   # past one MANAGE_INTERVAL (300 sim-s)
+        manager.update(0.1, carts)
+    assert manager.managed_hires >= 1
+    assert len(manager.pickers["S3"]) > 1
+    # Demand gone: reviews release the extra crew (never below 1)
+    for _ in range(70000):
+        manager.update(0.1, [])
+        if len(manager.pickers["S3"]) == 1:
+            break
+    assert len(manager.pickers["S3"]) == 1
+    assert manager.managed_releases >= 1
+
+
 def test_dynamic_relocation_takes_real_time():
     tiles = _world()
     manager = PickerManager(tiles, strategy="dynamic")

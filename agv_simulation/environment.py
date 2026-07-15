@@ -82,6 +82,7 @@ class Environment:
         event_jsonl: str | None = None,
         slotting: str = "sequential",
         picker_strategy: str = "static",
+        picker_management: bool = False,
         layout: HighwayLayout | None = None,
     ) -> None:
         # Dynamic highway: an explicit layout is installed as the active
@@ -97,7 +98,10 @@ class Environment:
         self.catalog = init_catalog(self.tiles, slotting=slotting)
         # Pickers (PRD §14.9); strategy: static station-bound vs dynamic
         # two-pool labour sharing (outer ring / central island toggle)
-        self.pickers = PickerManager(self.tiles, strategy=picker_strategy)
+        self.pickers = PickerManager(
+            self.tiles, strategy=picker_strategy,
+            management=picker_management,
+        )
         self.agvs: list[AGV] = []
         self.carts: list[Cart] = []
         self.sim_elapsed: float = 0.0

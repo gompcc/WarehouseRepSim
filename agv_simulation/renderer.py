@@ -14,7 +14,7 @@ from .constants import (
     TILE_COLORS, AGV_COLOR,
     PANEL_BG, PANEL_TEXT, PANEL_HEADER, PANEL_SEPARATOR,
     PANEL_GREEN, PANEL_YELLOW, PANEL_RED,
-    NORTH_HWY_ROW, EAST_HWY_ROW,
+    NORTH_HWY_ROW, EAST_HWY_ROW, NUM_SKUS,
 )
 from .metrics import rolling_rate, ROLLING_WINDOW
 from .models import STATIONS
@@ -483,15 +483,20 @@ def draw_metrics_panel(
     paused: bool,
     auto_spawn: bool,
     selected_agv: AGV | None = None,
+    scroll: int = 0,
 ) -> dict[str, pygame.Rect]:
-    """Draw the 300px metrics panel; return clickable toggle hitboxes."""
+    """Draw the 300px metrics panel; return clickable toggle hitboxes.
+
+    *scroll* shifts the content up (mouse wheel over the panel) — hitboxes
+    are returned in screen coordinates, so clicks keep working while
+    scrolled. The visible region is clipped to the panel column."""
     px = MAP_WIDTH
     panel_rect = pygame.Rect(px, 0, PANEL_WIDTH, WINDOW_HEIGHT)
     pygame.draw.rect(surface, PANEL_BG, panel_rect)
     toggle_rects: dict[str, pygame.Rect] = {}
 
-    # Window is 640px tall since the aisle expansion — keep the panel compact
-    y = 8
+    surface.set_clip(panel_rect)
+    y = 8 - scroll
     line_h = 13
     section_gap = 5
 
@@ -650,6 +655,17 @@ def draw_metrics_panel(
                 px + 8, y - 2, PANEL_WIDTH - 16, 16,
             )
             y += 17
+            # Picker management: auto-staffing controller — sizes every
+            # station's crew from live demand (queueing rule, no lookahead)
+            on = pm.management
+            color = PANEL_GREEN if on else PANEL_TEXT
+            txt = font_sm.render("  Picker management", True, color)
+            surface.blit(txt, (px + 8, y))
+            _draw_toggle_switch(surface, px + PANEL_WIDTH - 44, y - 1, on)
+            toggle_rects["picker_management"] = pygame.Rect(
+                px + 8, y - 2, PANEL_WIDTH - 16, 16,
+            )
+            y += 17
         # Slotting strategy: clicking cycles to the next arm and RESTARTS
         # the sim (products move, so the world must rebuild)
         from .aisles import get_catalog
@@ -707,7 +723,23 @@ def draw_metrics_panel(
         row_raw("None (TAB to select)", PANEL_TEXT)
     y += section_gap
 
-    # 9. Controls hint
+    # Content height (pre-scroll) — the main loop clamps the wheel with it
+    global _panel_content_h
+    _panel_content_h = y + scroll + 24
+    surface.set_clip(None)
+
+    # Scrollbar hint when the content overflows the column
+    if _panel_content_h > WINDOW_HEIGHT:
+        frac = WINDOW_HEIGHT / _panel_content_h
+        bar_h = max(24, int(WINDOW_HEIGHT * frac))
+        denom = _panel_content_h - WINDOW_HEIGHT
+        bar_y = int(scroll / denom * (WINDOW_HEIGHT - bar_h)) if denom else 0
+        pygame.draw.rect(
+            surface, (70, 70, 90),
+            pygame.Rect(px + PANEL_WIDTH - 5, bar_y, 3, bar_h),
+        )
+
+    # 9. Controls hint (pinned to the window bottom, not scrolled)
     controls_y = WINDOW_HEIGHT - 20
     ctrl_txt = font_sm.render(
         "A:AGV C:Cart T:Auto Space:Pause Up/Dn:Speed", True, PANEL_SEPARATOR
@@ -717,42 +749,58 @@ def draw_metrics_panel(
     return toggle_rects
 
 
-def _draw_order_size_hist(
+def panel_max_scroll() -> int:
+    """Furthest the panel content can scroll (0 when it all fits)."""
+    return max(0, _panel_content_h - WINDOW_HEIGHT)
+
+
+_panel_content_h: int = 0
+
+
+def _draw_location_spectrum(
     surface: pygame.Surface, font: pygame.font.Font,
-    sizes: list[int], rect: pygame.Rect,
+    pickers, rect: pygame.Rect,
 ) -> None:
-    """Histogram of lines-per-completed-order this session — a live check
-    that demand keeps the N(20,9) bell shape the order model samples."""
-    n = len(sizes)
-    title = font.render(f"lines/order · {n} done", True, PANEL_HEADER)
+    """Pick frequency across the 2000 physical locations (x = geometric
+    location index along the aisles, west→east). One thin vertical line
+    per pixel column builds up as picks complete: the skyline shows how
+    the active slotting spreads picker traffic over the warehouse — flat
+    is balanced, spiky means a few hot spots do all the work."""
+    from .aisles import get_catalog
+    title = font.render("picks by product location 1–2000", True, PANEL_HEADER)
     surface.blit(title, (rect.x, rect.y - 14))
     pygame.draw.line(
         surface, PANEL_SEPARATOR, (rect.x, rect.bottom), (rect.right, rect.bottom),
     )
-    if n < 3:
+    sku_picks = getattr(pickers, "sku_picks", None) if pickers else None
+    try:
+        loc_of = get_catalog().sku_location_index
+    except Exception:
+        return
+    if not sku_picks:
         txt = font.render("collecting…", True, PANEL_TEXT)
         surface.blit(txt, (rect.x + 4, rect.y + rect.h // 2 - 6))
         return
-    bin_w, nbins = 5, 10   # 0-4, 5-9, ... 45+
-    counts = [0] * nbins
-    for s in sizes:
-        counts[min(int(s) // bin_w, nbins - 1)] += 1
-    peak = max(counts)
-    bw = rect.w / nbins
-    for i, c in enumerate(counts):
+    cols = [0.0] * rect.w
+    for sku, n in sku_picks.items():
+        idx = loc_of.get(sku)
+        if idx is None:
+            continue
+        cols[min(rect.w - 1, (idx - 1) * rect.w // NUM_SKUS)] += n
+    peak = max(cols)
+    for i, c in enumerate(cols):
         if not c:
             continue
-        h = max(2, round(rect.h * c / peak))
-        pygame.draw.rect(surface, (95, 175, 240), pygame.Rect(
-            round(rect.x + i * bw) + 1, rect.bottom - h, round(bw) - 2, h,
-        ))
-    mean = sum(sizes) / n
-    sd = (sum((s - mean) ** 2 for s in sizes) / n) ** 0.5
-    mu = font.render(f"μ{mean:.0f} σ{sd:.0f}", True, PANEL_TEXT)
-    surface.blit(mu, (rect.right - mu.get_width(), rect.y - 14))
-    for v in (0, 25, 50):
+        h = max(1, round((rect.h - 2) * c / peak))
+        pygame.draw.line(
+            surface, (95, 175, 240),
+            (rect.x + i, rect.bottom - 1), (rect.x + i, rect.bottom - h),
+        )
+    n_lbl = font.render(f"{sum(sku_picks.values())} picks", True, PANEL_TEXT)
+    surface.blit(n_lbl, (rect.right - n_lbl.get_width(), rect.y - 14))
+    for v in (0, 500, 1000, 1500, 2000):
         lbl = font.render(str(v), True, (110, 112, 130))
-        lx = rect.x + rect.w * v // 50 - lbl.get_width() // 2
+        lx = rect.x + rect.w * v // 2000 - lbl.get_width() // 2
         lx = min(max(lx, rect.x), rect.right - lbl.get_width())
         surface.blit(lbl, (lx, rect.bottom + 2))
 
@@ -842,6 +890,7 @@ def draw_throughput_strip(
     carts=None,
     agvs=None,
     picker_counts: dict | None = None,
+    pickers=None,
 ) -> None:
     """Per-slotting picks/hr graph in the strip under the map.
 
@@ -869,11 +918,15 @@ def draw_throughput_strip(
     except Exception:
         current_name = None
 
-    # Right side of the strip: order-size bell + live station loading
-    _draw_order_size_hist(
-        surface, font_sm,
-        dispatcher.completed_order_sizes if dispatcher else [],
-        pygame.Rect(690, MAP_HEIGHT + 34, 150, 100),
+    # Second band, BELOW the temporal graph: order-size bell + live
+    # station loading, full-width side by side.
+    band_y = MAP_HEIGHT + 158
+    pygame.draw.line(
+        surface, PANEL_SEPARATOR, (0, band_y), (MAP_WIDTH, band_y),
+    )
+    _draw_location_spectrum(
+        surface, font_sm, pickers,
+        pygame.Rect(36, band_y + 22, 320, 96),
     )
     constraint_name = None
     if dispatcher is not None and carts is not None and agvs is not None:
@@ -884,7 +937,7 @@ def draw_throughput_strip(
         except Exception:
             constraint_name = None
     _draw_station_load_bars(
-        surface, font_sm, carts, pygame.Rect(872, MAP_HEIGHT + 34, 150, 100),
+        surface, font_sm, carts, pygame.Rect(450, band_y + 22, 480, 96),
         picker_counts=picker_counts, constraint=constraint_name,
     )
 
@@ -901,11 +954,10 @@ def draw_throughput_strip(
         surface.blit(txt, (10, MAP_HEIGHT + 34))
         return
 
-    margin_t, margin_b = 18, 24
     gx = 36
-    gy = MAP_HEIGHT + margin_t
-    gw = 540   # rate graph width; the distribution charts live to its right
-    gh = THROUGHPUT_STRIP_H - margin_t - margin_b
+    gy = MAP_HEIGHT + 18
+    gw = MAP_WIDTH - 36 - 70   # full-width temporal graph (top band)
+    gh = 116                   # leaves room for the time axis above band 2
 
     x_max = max(pts[-1][0] for _, pts in curves)
     max_rate = max(max(r for _, r in pts) for _, pts in curves) * 1.15
@@ -1072,7 +1124,8 @@ def render(
     picks_history: dict[str, list[tuple[float, float]]] | None = None,
     hover_pillar: str | None = None,
     drag_pillar: str | None = None,
-    restart_marks: list[float] | None = None,
+    restart_marks: list[tuple[float, str]] | None = None,
+    panel_scroll: int = 0,
 ) -> dict[str, pygame.Rect]:
     """Full frame render; returns clickable strategy-toggle hitboxes."""
     screen.fill(BG_COLOR)
@@ -1165,10 +1218,11 @@ def render(
         carts=carts,
         agvs=agvs,
         picker_counts=picker_counts,
+        pickers=pickers,
     )
 
     return draw_metrics_panel(
         screen, font_sm, font_md, agvs or [], carts or [],
         dispatcher, sim_elapsed, time_scale, paused, auto_spawn,
-        selected_agv=selected_agv,
+        selected_agv=selected_agv, scroll=panel_scroll,
     )
