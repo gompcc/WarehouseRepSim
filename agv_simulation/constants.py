@@ -20,7 +20,7 @@ WINDOW_WIDTH  = MAP_WIDTH + PANEL_WIDTH        # 1332 px total
 WINDOW_HEIGHT = MAP_HEIGHT + THROUGHPUT_STRIP_H  # 640 px
 FPS = 30
 
-SPEED_STEPS = [0.5, 1.0, 2.0, 5.0, 10.0, 20.0, 50.0, 100.0]
+SPEED_STEPS = [0.5, 1.0, 2.0, 5.0, 10.0, 20.0, 50.0, 100.0, 200.0]
 
 # Optimal fleet (AGVs, carts) per dispatch-strategy combo, keyed by
 # (eta_reservations, global_assignment). Flipping a GUI toggle retargets

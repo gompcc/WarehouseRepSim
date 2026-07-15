@@ -102,8 +102,8 @@ def main() -> None:
     agvs = env.agvs
     carts = env.carts
     selected_agv: AGV | None = None
-    time_scale: float = SPEED_STEPS[-1]
-    speed_index: int = len(SPEED_STEPS) - 1
+    speed_index: int = SPEED_STEPS.index(100.0)  # 200x opt-in via Up
+    time_scale: float = SPEED_STEPS[speed_index]
     paused: bool = False
     toggle_rects: dict = {}
     strategy_events: list[tuple[float, str]] = []  # graph markers
@@ -128,11 +128,13 @@ def main() -> None:
     # slotting toggles): sample times and cumulative pick counts carry
     # these offsets, so the graph's time axis is session-continuous and
     # the curves visibly adjust to each change instead of resetting.
-    # restart_marks are the session times of rebuilds — the strip greys
-    # out curve stretches younger than EQUILIBRIUM_SECONDS after one.
+    # restart_marks are (session time, label) per rebuild — the strip greys
+    # out curve stretches younger than EQUILIBRIUM_SECONDS after one and
+    # tags each stretch's settled-average line with the label (what the
+    # most recent major change was).
     picks_t_offset: float = 0.0
     picks_n_offset: float = 0.0
-    restart_marks: list[float] = [0.0]
+    restart_marks: list[tuple[float, str]] = [(0.0, "sequential")]
 
     def bank_curve() -> None:
         """Pin the live curve's final point and bank the old world's time
@@ -147,13 +149,17 @@ def main() -> None:
         picks_t_offset += env.sim_elapsed
         picks_n_offset += float(env.pickers.picks_done)
 
-    def apply_layout(new_layout: HighwayLayout) -> None:
+    def apply_layout(new_layout: HighwayLayout, label: str | None = None) -> None:
         """Install a highway layout and rebuild the world with curve
-        continuity (same slotting, crews and fleet target carry over)."""
+        continuity (same slotting, crews and fleet target carry over).
+        *label* names the change on the graph's settled-average line."""
         bank_curve()
         set_layout(new_layout)
         restart_world(env.catalog.slotting, keep_events=True)
-        restart_marks.append(picks_t_offset)
+        restart_marks.append((
+            picks_t_offset,
+            label or f"hwy L{new_layout.left_col}·R{new_layout.right_col}",
+        ))
 
     def restart_world(new_slotting: str, keep_events: bool = False) -> None:
         """Throw away the live world and rebuild it (same seed + fleet
@@ -391,7 +397,7 @@ def main() -> None:
                     bank_curve()
                     picks_history[new] = []
                     restart_world(new, keep_events=True)
-                    restart_marks.append(picks_t_offset)
+                    restart_marks.append((picks_t_offset, new))
                     strategy_events.append(
                         (picks_t_offset, f"slotting {new}")
                     )
@@ -407,7 +413,7 @@ def main() -> None:
                             dispatcher.export_results(
                                 env.sim_elapsed, agvs, carts,
                             )
-                        apply_layout(target)
+                        apply_layout(target, label="optimal highway")
                         strategy_events.append((
                             picks_t_offset,
                             f"hwy opt L{target.left_col}·R{target.right_col}",
@@ -427,6 +433,11 @@ def main() -> None:
                         (picks_t_offset + env.sim_elapsed,
                          f"Dynamic pickers {state}")
                     )
+                    # Strategy flips are major changes: new average segment
+                    restart_marks.append((
+                        picks_t_offset + env.sim_elapsed,
+                        f"dyn pickers {state.lower()}",
+                    ))
                     logger.info("[Strategy] Dynamic pickers -> %s (t=%.0fs)",
                                 state, env.sim_elapsed)
                     continue
@@ -449,6 +460,11 @@ def main() -> None:
                     strategy_events.append((
                         picks_t_offset + env.sim_elapsed,
                         f"{label} {state} · fleet {t_agvs}A/{t_carts}C",
+                    ))
+                    # Major change (fleet retargets too): new average segment
+                    restart_marks.append((
+                        picks_t_offset + env.sim_elapsed,
+                        f"{label} {state.lower()}",
                     ))
                     logger.info(
                         "[Strategy] %s -> %s (t=%.0fs) · fleet target %dA/%dC",

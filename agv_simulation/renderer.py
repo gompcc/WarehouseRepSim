@@ -717,6 +717,87 @@ def draw_metrics_panel(
     return toggle_rects
 
 
+def _draw_order_size_hist(
+    surface: pygame.Surface, font: pygame.font.Font,
+    sizes: list[int], rect: pygame.Rect,
+) -> None:
+    """Histogram of lines-per-completed-order this session — a live check
+    that demand keeps the N(20,9) bell shape the order model samples."""
+    n = len(sizes)
+    title = font.render(f"lines/order · {n} done", True, PANEL_HEADER)
+    surface.blit(title, (rect.x, rect.y - 14))
+    pygame.draw.line(
+        surface, PANEL_SEPARATOR, (rect.x, rect.bottom), (rect.right, rect.bottom),
+    )
+    if n < 3:
+        txt = font.render("collecting…", True, PANEL_TEXT)
+        surface.blit(txt, (rect.x + 4, rect.y + rect.h // 2 - 6))
+        return
+    bin_w, nbins = 5, 10   # 0-4, 5-9, ... 45+
+    counts = [0] * nbins
+    for s in sizes:
+        counts[min(int(s) // bin_w, nbins - 1)] += 1
+    peak = max(counts)
+    bw = rect.w / nbins
+    for i, c in enumerate(counts):
+        if not c:
+            continue
+        h = max(2, round(rect.h * c / peak))
+        pygame.draw.rect(surface, (95, 175, 240), pygame.Rect(
+            round(rect.x + i * bw) + 1, rect.bottom - h, round(bw) - 2, h,
+        ))
+    mean = sum(sizes) / n
+    sd = (sum((s - mean) ** 2 for s in sizes) / n) ** 0.5
+    mu = font.render(f"μ{mean:.0f} σ{sd:.0f}", True, PANEL_TEXT)
+    surface.blit(mu, (rect.right - mu.get_width(), rect.y - 14))
+    for v in (0, 25, 50):
+        lbl = font.render(str(v), True, (110, 112, 130))
+        lx = rect.x + rect.w * v // 50 - lbl.get_width() // 2
+        lx = min(max(lx, rect.x), rect.right - lbl.get_width())
+        surface.blit(lbl, (lx, rect.bottom + 2))
+
+
+def _draw_station_load_bars(
+    surface: pygame.Surface, font: pygame.font.Font,
+    carts, rect: pygame.Rect,
+) -> None:
+    """Live loading per station: how many active orders still need to
+    visit each S station (their un-completed station visits)."""
+    load = {i: 0 for i in range(1, 10)}
+    for cart in carts or []:
+        order = getattr(cart, "order", None)
+        if order is None:
+            continue
+        for s in getattr(order, "stations_to_visit", ()):
+            if s not in order.completed_stations:
+                load[s] += 1
+    title = font.render("orders loading S1–S9", True, PANEL_HEADER)
+    surface.blit(title, (rect.x, rect.y - 14))
+    pygame.draw.line(
+        surface, PANEL_SEPARATOR, (rect.x, rect.bottom), (rect.right, rect.bottom),
+    )
+    peak = max(load.values())
+    bw = rect.w / 9
+    for i in range(1, 10):
+        cx = round(rect.x + (i - 1) * bw)
+        color = ZONE_COLORS.get(f"S{i}", PANEL_TEXT)
+        c = load[i]
+        if c and peak:
+            h = max(2, round(rect.h * c / peak))
+            pygame.draw.rect(surface, color, pygame.Rect(
+                cx + 2, rect.bottom - h, round(bw) - 4, h,
+            ))
+            cnt = font.render(str(c), True, PANEL_TEXT)
+            surface.blit(cnt, (
+                round(cx + (bw - cnt.get_width()) / 2),
+                max(rect.y - 2, rect.bottom - h - 12),
+            ))
+        lbl = font.render(str(i), True, color)
+        surface.blit(
+            lbl, (round(cx + (bw - lbl.get_width()) / 2), rect.bottom + 2),
+        )
+
+
 def draw_throughput_strip(
     surface: pygame.Surface,
     font_sm: pygame.font.Font,
@@ -724,7 +805,8 @@ def draw_throughput_strip(
     sim_elapsed: float,
     strategy_events: list[tuple[float, str]] | None = None,
     picks_history: dict[str, list[tuple[float, float]]] | None = None,
-    restart_marks: list[float] | None = None,
+    restart_marks: list[tuple[float, str]] | None = None,
+    carts=None,
 ) -> None:
     """Per-slotting picks/hr graph in the strip under the map.
 
@@ -752,6 +834,16 @@ def draw_throughput_strip(
     except Exception:
         current_name = None
 
+    # Right side of the strip: order-size bell + live station loading
+    _draw_order_size_hist(
+        surface, font_sm,
+        dispatcher.completed_order_sizes if dispatcher else [],
+        pygame.Rect(690, MAP_HEIGHT + 34, 150, 100),
+    )
+    _draw_station_load_bars(
+        surface, font_sm, carts, pygame.Rect(872, MAP_HEIGHT + 34, 150, 100),
+    )
+
     curves: list[tuple[str, list[tuple[float, float]]]] = []
     for name, series in (picks_history or {}).items():
         pts = rolling_rate(series)
@@ -765,10 +857,10 @@ def draw_throughput_strip(
         surface.blit(txt, (10, MAP_HEIGHT + 34))
         return
 
-    margin_l, margin_r, margin_t, margin_b = 36, 70, 18, 12
-    gx = margin_l
+    margin_t, margin_b = 18, 24
+    gx = 36
     gy = MAP_HEIGHT + margin_t
-    gw = MAP_WIDTH - margin_l - margin_r
+    gw = 540   # rate graph width; the distribution charts live to its right
     gh = THROUGHPUT_STRIP_H - margin_t - margin_b
 
     x_max = max(pts[-1][0] for _, pts in curves)
@@ -801,6 +893,20 @@ def draw_throughput_strip(
         surface.blit(g_lbl, (gx - g_lbl.get_width() - 4, yv - 6))
         v += grid_step
 
+    # Time axis (session sim-time) along the bottom
+    t_step = next(
+        (s for s in (600, 900, 1800, 3600, 7200, 14400, 28800)
+         if x_max / s <= 8), 57600,
+    )
+    tt = t_step
+    while tt < x_max:
+        tx = gx + int(gw * tt / x_max)
+        pygame.draw.line(surface, PANEL_SEPARATOR, (tx, gy + gh), (tx, gy + gh + 3))
+        t_txt = f"{tt / 3600:g}h" if tt >= 3600 else f"{int(tt / 60)}m"
+        t_lbl = font_sm.render(t_txt, True, (110, 112, 130))
+        surface.blit(t_lbl, (tx - t_lbl.get_width() // 2, gy + gh + 4))
+        tt += t_step
+
     # Dispatch-toggle markers (current run's sim times)
     for t_ev, label in (strategy_events or []):
         if t_ev <= 0 or t_ev > x_max:
@@ -812,8 +918,16 @@ def draw_throughput_strip(
 
     from .metrics import EQUILIBRIUM_SECONDS
 
+    # Major-change marks: (session time, label). Tolerate bare floats.
+    marks: list[tuple[float, str]] = sorted(
+        (float(m), "") if isinstance(m, (int, float))
+        else (float(m[0]), str(m[1]))
+        for m in (restart_marks or [(0.0, "")])
+    )
+    mark_times = [t for t, _ in marks]
+
     def _is_stable(t: float) -> bool:
-        last = max((m for m in (restart_marks or [0.0]) if m <= t), default=0.0)
+        last = max((m for m in mark_times if m <= t), default=0.0)
         return t - last >= EQUILIBRIUM_SECONDS
 
     grey = (120, 120, 130)
@@ -844,10 +958,9 @@ def draw_throughput_strip(
     merged = sorted(
         pt for series in (picks_history or {}).values() for pt in series
     )
-    marks = sorted(set(restart_marks or [0.0]))
     avg_color = (225, 228, 240)
     active_avg: float | None = None
-    for m0, m1 in zip(marks, marks[1:] + [x_max]):
+    for (m0, m_label), m1 in zip(marks, mark_times[1:] + [x_max]):
         settled = [
             (t, c) for t, c in merged
             if m0 + EQUILIBRIUM_SECONDS <= t <= m1
@@ -860,12 +973,13 @@ def draw_throughput_strip(
         x0 = gx + int(gw * min(m0 / x_max, 1.0))
         x1 = gx + int(gw * min(m1 / x_max, 1.0))
         pygame.draw.line(surface, avg_color, (x0, y_avg), (x1, y_avg), 1)
-        a_lbl = font_sm.render(f"ø{seg_avg:.0f}", True, avg_color)
+        a_text = f"ø{seg_avg:.0f} · {m_label}" if m_label else f"ø{seg_avg:.0f}"
+        a_lbl = font_sm.render(a_text, True, avg_color)
         surface.blit(
             a_lbl,
             (max(x0 + 2, x1 - a_lbl.get_width() - 2), max(gy, y_avg - 12)),
         )
-        if m0 == marks[-1] or m1 == x_max:
+        if m1 == x_max:
             active_avg = seg_avg
 
     # Legend (top-right of the plot area), live entry bright
@@ -1004,6 +1118,7 @@ def render(
         strategy_events=strategy_events,
         picks_history=picks_history,
         restart_marks=restart_marks,
+        carts=carts,
     )
 
     return draw_metrics_panel(

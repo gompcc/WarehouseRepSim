@@ -54,6 +54,7 @@ class Dispatcher:
         self.completed_orders: int = 0
         self._station_fill_cache: dict = {}
         self.order_completion_times: list[float] = []
+        self.completed_order_sizes: list[int] = []  # lines per completed order
         self.cart_start_times: dict[int, float] = {}
         self.cycle_times: list[float] = []
         self._sim_elapsed: float = 0.0
@@ -546,6 +547,8 @@ class Dispatcher:
         elif job.job_type == JobType.RETURN_TO_BOX_DEPOT:
             cart.state = CartState.AT_BOX_DEPOT
             cart.process_timer = BOX_DEPOT_TIME
+            if cart.order is not None:
+                self.completed_order_sizes.append(len(cart.order.lines))
             cart.order = None
             cart.times_buffered = 0  # reset for new order cycle
             self.completed_orders += 1
