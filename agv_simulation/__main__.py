@@ -72,7 +72,11 @@ def main() -> None:
     )
 
     pygame.init()
-    screen = pygame.display.set_mode((WINDOW_WIDTH, WINDOW_HEIGHT))
+    # RESIZABLE|SCALED: drag the window to any size — pygame renders at
+    # the fixed logical resolution and scales with the aspect ratio
+    # preserved (letterboxed), translating mouse coords back for us.
+    flags = getattr(pygame, "RESIZABLE", 0) | getattr(pygame, "SCALED", 0)
+    screen = pygame.display.set_mode((WINDOW_WIDTH, WINDOW_HEIGHT), flags)
     pygame.display.set_caption("AGV Warehouse Simulation")
     clock = pygame.time.Clock()
 
