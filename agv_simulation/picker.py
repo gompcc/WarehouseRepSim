@@ -25,7 +25,7 @@ from typing import TYPE_CHECKING
 from .enums import CartState, TileType
 from .constants import (
     PICK_GRAB_TIME, PICKERS_PER_STATION, PICKER_WALK_SPEED, METERS_PER_TILE,
-    PICKS_PER_VISIT_MEAN, PICKS_PER_VISIT_SD,
+    PICKS_PER_VISIT_MEAN, PICKS_PER_VISIT_SD, EAST_HWY_ROW,
 )
 from .aisles import get_catalog, walk_time_seconds
 
@@ -35,6 +35,14 @@ if TYPE_CHECKING:
 logger = logging.getLogger(__name__)
 
 _PICKER_RNG_SEED = 20260714  # own stream — never touches the global RNG
+
+# Cross-track detour rows for the dynamic OUTER labour pool: a picker moving
+# between a west and an east station cannot cross the one-way AGV track, so
+# it walks around the outside — over the very top (row 0, above the Box
+# Depot / Pack-off blocks) or under the bottom (the row below the East
+# Highway), whichever is shorter.
+_NORTH_DETOUR_ROW = 0.0
+_SOUTH_DETOUR_ROW = float(EAST_HWY_ROW + 1)
 
 
 class Picker:
@@ -63,6 +71,7 @@ class Picker:
         self.timer = 0.0     # elapsed in current state (s)
         self._move_sid: str | None = None  # relocation target (dynamic)
         self._move_to: tuple[float, float] | None = None
+        self._move_path: list[tuple[float, float]] | None = None
 
     # -- lifecycle -----------------------------------------------------
 
@@ -73,15 +82,19 @@ class Picker:
         station_id: str | None = None,
         station_pos: tuple[float, float] | None = None,
         relocate_secs: float = 0.0,
+        relocate_path: list[tuple[float, float]] | None = None,
     ) -> None:
         """Serve *cart*. With ``relocate_secs`` (dynamic strategy) the picker
         first walks to *station_id*/*station_pos* — the inter-station walk is
-        real time spent — then starts the cart's picks from there."""
+        real time spent — then starts the cart's picks from there.
+        ``relocate_path`` (cross-track moves in the outer pool) animates the
+        walk along the given waypoints instead of a straight line."""
         self.cart = cart
         self.pending_skus = list(skus)
         if relocate_secs > 0.0 and station_id and station_pos:
             self._move_sid = station_id
             self._move_to = station_pos
+            self._move_path = relocate_path
             self.leg_time = relocate_secs
             self.timer = 0.0
             self.state = Picker.MOVE_STATION
@@ -134,13 +147,17 @@ class Picker:
                 self.station_id = self._move_sid or self.station_id
                 self.home = self._move_to or self.home
                 self.pos = self.home
-                self._move_sid = self._move_to = None
+                self._move_sid = self._move_to = self._move_path = None
                 self._next_pick()
             elif self._move_to is not None and self.leg_time > 0:
                 frac = min(1.0, self.timer / self.leg_time)
-                hx, hy = self.home
-                tx, ty = self._move_to
-                self.pos = (hx + (tx - hx) * frac, hy + (ty - hy) * frac)
+                if self._move_path:
+                    # cross-track move: around the outside of the ring
+                    self.pos = _along_path(self._move_path, frac)
+                else:
+                    hx, hy = self.home
+                    tx, ty = self._move_to
+                    self.pos = (hx + (tx - hx) * frac, hy + (ty - hy) * frac)
             return None
 
         if self.state == Picker.WALK_OUT and self.timer >= self.leg_time:
@@ -197,9 +214,14 @@ class PickerManager:
     ``strategy`` (experiment toggle):
     - ``"static"`` (default): a picker is bound to its station and only
       serves carts queued there.
-    - ``"dynamic"``: an idle picker may relocate to the worst backlog on
-      ITS OWN SIDE of the highway (pickers never cross it) — the
-      inter-station walk costs real time and counts as busy.
+    - ``"dynamic"``: two shared labour pools. The OUTER pool (west + east
+      stations: S1/S3 and S5/S7/S9 on the classic layout) shares pickers
+      around the OUTSIDE of the AGV track — a west↔east move walks over
+      the top (above the Box Depot) or under the bottom (below the East
+      Highway), whichever is shorter, and that detour costs real time.
+      The CENTRAL pool (S2/S4/S6/S8, the island between the pillars)
+      shares pickers within the middle. Pickers never cross the track
+      itself, and the pools never mix.
     """
 
     STRATEGIES = ("static", "dynamic")
@@ -298,18 +320,50 @@ class PickerManager:
     def add_picker(self, station_id: str) -> Picker:
         """Hire one extra picker at *station_id* (GUI station click).
 
-        Under the dynamic strategy the newcomer roams its side like any
-        other picker — assignment iterates live crews, so no extra wiring."""
+        Under the dynamic strategy the newcomer roams its labour pool like
+        any other picker — assignment iterates live crews, so no extra
+        wiring."""
         picker = Picker(station_id, self.station_positions[station_id])
         self.pickers[station_id].append(picker)
         return picker
 
+    def _pool(self, sid: str) -> str:
+        """Dynamic labour pool: the central island is one pool; the west
+        and east outer stations share the other (reachable from each other
+        around the outside of the track)."""
+        return "central" if self.station_side.get(sid) == "central" else "outer"
+
     def _station_dist_m(self, a: str, b: str) -> float:
-        """Walking metres between two station homes (same side only —
-        callers never pair stations across the highway)."""
+        """Walking metres between two station homes.
+
+        Same side: Manhattan. West↔east (outer-pool moves): around the
+        outside of the AGV track via the shorter of the top detour (row
+        ``_NORTH_DETOUR_ROW``, above the Box Depot / Pack-off) and the
+        bottom detour (below the East Highway). Pools never mix, so a
+        central↔outer pair is never requested."""
         (ax, ay) = self.station_positions[a]
         (bx, by) = self.station_positions[b]
+        sa, sb = self.station_side.get(a), self.station_side.get(b)
+        if sa != sb and "central" not in (sa, sb):
+            north = (ay - _NORTH_DETOUR_ROW) + abs(ax - bx) + (by - _NORTH_DETOUR_ROW)
+            south = (_SOUTH_DETOUR_ROW - ay) + abs(ax - bx) + (_SOUTH_DETOUR_ROW - by)
+            return min(north, south) * METERS_PER_TILE
         return (abs(ax - bx) + abs(ay - by)) * METERS_PER_TILE
+
+    def _relocate_path(
+        self, a: str, b: str,
+    ) -> list[tuple[float, float]] | None:
+        """Waypoints for a cross-track (west↔east) relocation, taking the
+        shorter outside detour; ``None`` for same-side moves (straight)."""
+        sa, sb = self.station_side.get(a), self.station_side.get(b)
+        if sa == sb or "central" in (sa, sb):
+            return None
+        (ax, ay) = self.station_positions[a]
+        (bx, by) = self.station_positions[b]
+        north = (ay - _NORTH_DETOUR_ROW) + (by - _NORTH_DETOUR_ROW)
+        south = (_SOUTH_DETOUR_ROW - ay) + (_SOUTH_DETOUR_ROW - by)
+        row = _NORTH_DETOUR_ROW if north <= south else _SOUTH_DETOUR_ROW
+        return [(ax, ay), (ax, row), (bx, row), (bx, by)]
 
     def _pick_list(self, cart: Cart, station_id: str) -> list[int]:
         """The SKU lines this cart needs here: the order's *remaining* lines
@@ -366,7 +420,8 @@ class PickerManager:
         # 3. Assign idle pickers ONE LINE at a time — several pickers can
         # work the same cart's order concurrently (user spec: one order,
         # many pickers). Own-station queues first for EVERY picker; only
-        # then may dynamic pickers relocate to their side's worst backlog.
+        # then may dynamic pickers relocate to their labour pool's worst
+        # backlog (outer pool: around the outside of the track).
         idle = [
             p for p in self.all_pickers()
             if p.state == Picker.IDLE and p.cart is None
@@ -380,10 +435,10 @@ class PickerManager:
         if self.strategy == "dynamic":
             for picker in idle:
                 sid = picker.station_id
-                side = self.station_side.get(sid)
+                pool = self._pool(sid)
                 candidates = [
                     s for s, q in self.queues.items()
-                    if self.station_side.get(s) == side
+                    if self._pool(s) == pool
                     and any(entry[1] for entry in q)
                 ]
                 if not candidates:
@@ -403,6 +458,7 @@ class PickerManager:
                     station_id=target,
                     station_pos=self.station_positions[target],
                     relocate_secs=walk_secs,
+                    relocate_path=self._relocate_path(sid, target),
                 )
                 self.relocations += 1
                 self.relocation_seconds += walk_secs

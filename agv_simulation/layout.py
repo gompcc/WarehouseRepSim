@@ -34,6 +34,12 @@ LEFT_COL_MIN = 16
 RIGHT_COL_MAX = 70
 MIN_PILLAR_GAP = 17
 
+# Throughput-optimal pillar columns from experiments/run_highway_sweep.py
+# (2026-07-15: 70-layout screen + 2h x 3-seed confirm — 26.8 orders/hr vs
+# 11.0 at the classic (23, 52) with the 10 AGV / 25 cart fleet). The GUI's
+# panel button jumps straight here.
+OPTIMAL_HIGHWAY: tuple[int, int] = (16, 50)
+
 # Racking run rows per bank (fixed; only column spans move with the pillars)
 WEST_RUN_ROWS = (10, 13, 16, 19, 22, 25, 28, 31, 34, 37)
 CENTRAL_RUN_ROWS = (12, 15, 18, 21, 24, 27, 30, 33)

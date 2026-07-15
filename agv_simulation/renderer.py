@@ -527,6 +527,32 @@ def draw_metrics_panel(
     row("Status", status_text, status_color)
     as_color = PANEL_GREEN if auto_spawn else PANEL_TEXT
     row("Auto-spawn", "ON" if auto_spawn else "OFF", as_color)
+
+    # Highway pillars + one-click jump to the sweep optimum
+    from .layout import OPTIMAL_HIGHWAY, get_layout
+    _lay = get_layout()
+    at_opt = (_lay.left_col, _lay.right_col) == OPTIMAL_HIGHWAY
+    hw_txt = font_sm.render(
+        f"  Highway: L{_lay.left_col}·R{_lay.right_col}", True, PANEL_TEXT,
+    )
+    surface.blit(hw_txt, (px + 8, y))
+    if at_opt:
+        ok = font_sm.render("✓ optimal", True, PANEL_GREEN)
+        surface.blit(ok, (px + 8 + hw_txt.get_width() + 8, y))
+    else:
+        btxt = font_sm.render(
+            f"→ L{OPTIMAL_HIGHWAY[0]}·R{OPTIMAL_HIGHWAY[1]}",
+            True, (235, 240, 255),
+        )
+        btn = pygame.Rect(
+            px + 8 + hw_txt.get_width() + 8, y - 1,
+            btxt.get_width() + 10, 14,
+        )
+        pygame.draw.rect(surface, (50, 80, 160), btn, border_radius=4)
+        pygame.draw.rect(surface, PANEL_HEADER, btn, 1, border_radius=4)
+        surface.blit(btxt, (btn.x + 5, btn.y + 1))
+        toggle_rects["highway_optimum"] = btn
+    y += line_h
     y += section_gap
 
     # 2. FLEET STATUS
@@ -611,8 +637,8 @@ def draw_metrics_panel(
                 px + 8, y - 2, PANEL_WIDTH - 16, 16,
             )
             y += 17
-        # Picker strategy toggle: static station-bound vs dynamic
-        # roam-within-side (pickers never cross the highway)
+        # Picker strategy toggle: static station-bound vs dynamic two-pool
+        # labour sharing (outer ring around the track / central island)
         pm = getattr(dispatcher, "pickers", None)
         if pm is not None:
             on = pm.strategy == "dynamic"
@@ -698,12 +724,17 @@ def draw_throughput_strip(
     sim_elapsed: float,
     strategy_events: list[tuple[float, str]] | None = None,
     picks_history: dict[str, list[tuple[float, float]]] | None = None,
+    restart_marks: list[float] | None = None,
 ) -> None:
-    """Per-slotting picks/hr comparison graph in the strip under the map.
+    """Per-slotting picks/hr graph in the strip under the map.
 
-    One rolling-``ROLLING_WINDOW`` curve per slotting strategy, all runs
-    t=0-aligned on shared axes: finished runs dimmed, the live run bright.
-    Yellow markers flag dispatch-strategy toggles in the current run.
+    One rolling-``ROLLING_WINDOW`` curve per slotting strategy on a shared
+    session-continuous time axis (pillar drags and slotting toggles carry
+    the timeline forward): finished runs dimmed, the live run bright.
+    Yellow markers flag strategy toggles and layout/slotting changes.
+    ``restart_marks`` are the session times of world rebuilds — curve
+    points younger than ``EQUILIBRIUM_SECONDS`` after a rebuild draw GREY
+    (the pipeline is still refilling; don't read the rate yet).
     """
     strip = pygame.Rect(0, MAP_HEIGHT, MAP_WIDTH, THROUGHPUT_STRIP_H)
     pygame.draw.rect(surface, PANEL_BG, strip)
@@ -766,16 +797,30 @@ def draw_throughput_strip(
         ev_txt = font_sm.render(label, True, PANEL_YELLOW)
         surface.blit(ev_txt, (min(ex + 3, gx + gw - ev_txt.get_width()), gy - 14))
 
+    from .metrics import EQUILIBRIUM_SECONDS
+
+    def _is_stable(t: float) -> bool:
+        last = max((m for m in (restart_marks or [0.0]) if m <= t), default=0.0)
+        return t - last >= EQUILIBRIUM_SECONDS
+
+    grey = (120, 120, 130)
     current_rate: float | None = None
+    live_stable = True
     for name, pts in curves:
         base = SLOTTING_COLORS.get(name, PANEL_TEXT)
         is_live = name == current_name
         color = base if is_live else _dim(base)
-        points = [to_xy(t, r) for t, r in pts]
-        if len(points) >= 2:
-            pygame.draw.lines(surface, color, False, points, 2 if is_live else 1)
+        # Pairwise draw so restabilising stretches (young after a world
+        # rebuild) render grey while settled stretches keep their color
+        for (t1, r1), (t2, r2) in zip(pts, pts[1:]):
+            seg_color = color if _is_stable(t2) else grey
+            pygame.draw.line(
+                surface, seg_color, to_xy(t1, r1), to_xy(t2, r2),
+                2 if is_live else 1,
+            )
         if is_live:
             current_rate = pts[-1][1]
+            live_stable = _is_stable(pts[-1][0])
 
     # Legend (top-right of the plot area), live entry bright
     lx = gx + gw - 4
@@ -791,8 +836,12 @@ def draw_throughput_strip(
     # Current-run readouts at right
     live_color = SLOTTING_COLORS.get(current_name or "", PANEL_TEXT)
     if current_rate is not None:
-        cur_txt = font_sm.render(f"now: {current_rate:.0f}/hr", True, live_color)
+        now_color = live_color if live_stable else grey
+        cur_txt = font_sm.render(f"now: {current_rate:.0f}/hr", True, now_color)
         surface.blit(cur_txt, (gx + gw + 6, gy + 2))
+        if not live_stable:
+            st_txt = font_sm.render("stabilising…", True, grey)
+            surface.blit(st_txt, (gx + gw + 6, gy + 34))
     series = (picks_history or {}).get(current_name or "", [])
     if series and series[-1][0] > 0:
         t_last, picks_last = series[-1]
@@ -820,6 +869,7 @@ def render(
     picks_history: dict[str, list[tuple[float, float]]] | None = None,
     hover_pillar: str | None = None,
     drag_pillar: str | None = None,
+    restart_marks: list[float] | None = None,
 ) -> dict[str, pygame.Rect]:
     """Full frame render; returns clickable strategy-toggle hitboxes."""
     screen.fill(BG_COLOR)
@@ -908,6 +958,7 @@ def render(
         screen, font_sm, dispatcher, sim_elapsed,
         strategy_events=strategy_events,
         picks_history=picks_history,
+        restart_marks=restart_marks,
     )
 
     return draw_metrics_panel(

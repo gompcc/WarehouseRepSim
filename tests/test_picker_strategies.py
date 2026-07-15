@@ -1,14 +1,23 @@
-"""Picker strategies: static (station-bound) vs dynamic (roam within side).
+"""Picker strategies: static (station-bound) vs dynamic (two labour pools).
 
-Dynamic pickers may relocate to the worst backlog on their OWN side of the
-highway — never across it — and the inter-station walk costs real time.
+Dynamic pickers share labour in two pools that never mix: the OUTER pool
+(west S1/S3 + east S5/S7/S9) reaches across the warehouse by walking around
+the OUTSIDE of the AGV track (over the top above the Box Depot, or under the
+East Highway — the shorter detour), and the CENTRAL pool (S2/S4/S6/S8)
+shares within the island between the pillars. Relocation costs real time.
 """
 
+from agv_simulation.constants import METERS_PER_TILE
 from agv_simulation.enums import CartState, TileType
 from agv_simulation.map_builder import build_map
-from agv_simulation.aisles import get_catalog, init_catalog
+from agv_simulation.aisles import init_catalog
 from agv_simulation.models import Cart
-from agv_simulation.picker import Picker, PickerManager
+from agv_simulation.picker import (
+    _NORTH_DETOUR_ROW, _SOUTH_DETOUR_ROW, Picker, PickerManager,
+)
+
+OUTER = {"S1", "S3", "S5", "S7", "S9"}
+CENTRAL = {"S2", "S4", "S6", "S8"}
 
 
 def _world():
@@ -69,23 +78,66 @@ def test_dynamic_relocates_to_backlog_on_own_side():
     assert manager.carts_left_early == 0
 
 
-def test_dynamic_never_crosses_the_highway():
+def test_dynamic_pools_never_mix():
     tiles = _world()
     manager = PickerManager(tiles, strategy="dynamic")
-    side = get_catalog().station_side
-    # Three carts at S5 (east side, capacity 3): S5's picker plus exactly
-    # the east-side helpers (S7/S9) may serve them — never west/central
+    # Three carts at S5 (outer pool): only outer-pool pickers (S1/S3/S7/S9
+    # helpers) may serve them — central pickers must not move
     carts = [_picking_cart(tiles, "S5", i) for i in range(3)]
     _run(manager, carts)
     for crew_sid, crew in manager.pickers.items():
         for picker in crew:
-            assert side[picker.station_id] == side[crew_sid], (
-                f"picker from {crew_sid} crossed to {picker.station_id}"
+            same_pool = (
+                (crew_sid in OUTER) == (picker.station_id in OUTER)
             )
-    # West and central pickers specifically must not have moved at all
-    for sid in ("S1", "S2", "S3", "S4", "S6", "S8"):
+            assert same_pool, (
+                f"picker from {crew_sid} left its pool to {picker.station_id}"
+            )
+    for sid in CENTRAL:
         for picker in manager.pickers[sid]:
             assert picker.station_id == sid
+
+
+def test_outer_pool_shares_across_the_track():
+    """S1/S3 (west) may help S5/S7/S9 (east) by walking around the outside
+    of the track — the detour time is charged, not straight-line time."""
+    tiles = _world()
+    manager = PickerManager(tiles, strategy="dynamic")
+    # Enough carts at S9 to exhaust the east helpers and pull in west crew:
+    # S9 has 4 pick slots; S5/S7/S9 supply 3 outer-east pickers, so a 4th
+    # concurrent cart needs a west picker to cross
+    carts = [_picking_cart(tiles, "S9", i) for i in range(4)]
+    _run(manager, carts)
+    west_crew = [p for sid in ("S1", "S3") for p in manager.pickers[sid]]
+    assert any(p.station_id in ("S5", "S7", "S9") for p in west_crew), (
+        "no west picker crossed to help the east backlog"
+    )
+
+
+def test_cross_track_distance_is_the_outside_detour():
+    tiles = _world()
+    manager = PickerManager(tiles, strategy="dynamic")
+    (ax, ay) = manager.station_positions["S1"]
+    (bx, by) = manager.station_positions["S9"]
+    north = (ay - _NORTH_DETOUR_ROW) + abs(ax - bx) + (by - _NORTH_DETOUR_ROW)
+    south = (_SOUTH_DETOUR_ROW - ay) + abs(ax - bx) + (_SOUTH_DETOUR_ROW - by)
+    expected = min(north, south) * METERS_PER_TILE
+    got = manager._station_dist_m("S1", "S9")
+    assert got == expected
+    # and it must exceed the (illegal) straight Manhattan line
+    manhattan = (abs(ax - bx) + abs(ay - by)) * METERS_PER_TILE
+    assert got > manhattan
+    # same-side stays Manhattan
+    (cx, cy) = manager.station_positions["S3"]
+    assert manager._station_dist_m("S1", "S3") == (
+        (abs(ax - cx) + abs(ay - cy)) * METERS_PER_TILE
+    )
+    # the animation path for a cross move hugs the chosen detour row
+    path = manager._relocate_path("S1", "S9")
+    assert path is not None
+    rows = {p[1] for p in path[1:3]}
+    assert rows <= {_NORTH_DETOUR_ROW, _SOUTH_DETOUR_ROW}
+    assert manager._relocate_path("S1", "S3") is None
 
 
 def test_added_picker_serves_in_parallel():

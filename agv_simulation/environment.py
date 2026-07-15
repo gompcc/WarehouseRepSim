@@ -96,7 +96,7 @@ class Environment:
         # strategy (sequential / aisle_proximal / fibonacci)
         self.catalog = init_catalog(self.tiles, slotting=slotting)
         # Pickers (PRD §14.9); strategy: static station-bound vs dynamic
-        # roam-within-side (experiment toggle)
+        # two-pool labour sharing (outer ring / central island toggle)
         self.pickers = PickerManager(self.tiles, strategy=picker_strategy)
         self.agvs: list[AGV] = []
         self.carts: list[Cart] = []

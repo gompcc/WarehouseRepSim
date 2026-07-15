@@ -23,7 +23,7 @@ from .constants import (
 )
 from .agv import AGV
 from .aisles import SLOTTING_STRATEGIES
-from .layout import get_layout, set_layout
+from .layout import OPTIMAL_HIGHWAY, HighwayLayout, get_layout, set_layout
 from .map_builder import verify_graph
 from .environment import Environment
 from .dispatcher import Dispatcher
@@ -124,13 +124,36 @@ def main() -> None:
     cursor_resize: bool = False
     can_set_cursor = hasattr(pygame, "SYSTEM_CURSOR_SIZEWE")
 
-    # Throughput-strip continuity across pillar-drag rebuilds: sample times
-    # and cumulative pick counts carry these offsets, so the live picks/hr
-    # curve runs straight through a layout change and visibly adjusts to the
-    # new geometry. Slotting toggles still restart their arm's curve at t=0
-    # (the offsets reset with it).
+    # Throughput-strip continuity across world rebuilds (pillar drags AND
+    # slotting toggles): sample times and cumulative pick counts carry
+    # these offsets, so the graph's time axis is session-continuous and
+    # the curves visibly adjust to each change instead of resetting.
+    # restart_marks are the session times of rebuilds — the strip greys
+    # out curve stretches younger than EQUILIBRIUM_SECONDS after one.
     picks_t_offset: float = 0.0
     picks_n_offset: float = 0.0
+    restart_marks: list[float] = [0.0]
+
+    def bank_curve() -> None:
+        """Pin the live curve's final point and bank the old world's time
+        and picks into the session offsets (call just before a rebuild)."""
+        nonlocal picks_t_offset, picks_n_offset
+        cur = env.catalog.slotting
+        if env.sim_elapsed > 0:
+            picks_history.setdefault(cur, []).append((
+                picks_t_offset + env.sim_elapsed,
+                picks_n_offset + float(env.pickers.picks_done),
+            ))
+        picks_t_offset += env.sim_elapsed
+        picks_n_offset += float(env.pickers.picks_done)
+
+    def apply_layout(new_layout: HighwayLayout) -> None:
+        """Install a highway layout and rebuild the world with curve
+        continuity (same slotting, crews and fleet target carry over)."""
+        bank_curve()
+        set_layout(new_layout)
+        restart_world(env.catalog.slotting, keep_events=True)
+        restart_marks.append(picks_t_offset)
 
     def restart_world(new_slotting: str, keep_events: bool = False) -> None:
         """Throw away the live world and rebuild it (same seed + fleet
@@ -359,23 +382,40 @@ def main() -> None:
                     idx = SLOTTING_STRATEGIES.index(old) if old in SLOTTING_STRATEGIES else -1
                     new = SLOTTING_STRATEGIES[(idx + 1) % len(SLOTTING_STRATEGIES)]
                     if env.sim_elapsed > 0:
-                        # snapshot the finished run: results record + final
-                        # curve point, exactly like the quit path
+                        # snapshot the finished run, exactly like the quit path
                         dispatcher.export_results(env.sim_elapsed, agvs, carts)
-                        picks_history.setdefault(old, []).append((
-                            picks_t_offset + env.sim_elapsed,
-                            picks_n_offset + float(env.pickers.picks_done),
-                        ))
-                    # re-running a strategy replaces its old curve; the new
-                    # arm starts a fresh t=0-aligned curve (offsets reset)
+                    # Session-continuous graph (same as pillar drags): bank
+                    # the old arm's segment; the new arm's curve starts at
+                    # the current session time. Re-running an arm replaces
+                    # its previous segment.
+                    bank_curve()
                     picks_history[new] = []
-                    picks_t_offset = 0.0
-                    picks_n_offset = 0.0
-                    restart_world(new)
+                    restart_world(new, keep_events=True)
+                    restart_marks.append(picks_t_offset)
+                    strategy_events.append(
+                        (picks_t_offset, f"slotting {new}")
+                    )
                     logger.info(
                         "[Slotting] %s -> %s — world restarted (seed %d, fleet %dA/%dC)",
                         old, new, GUI_ORDER_SEED, *fleet_target,
                     )
+                    continue
+                if clicked_toggle == "highway_optimum":
+                    target = HighwayLayout(*OPTIMAL_HIGHWAY)
+                    if get_layout() != target:
+                        if env.sim_elapsed > 0:
+                            dispatcher.export_results(
+                                env.sim_elapsed, agvs, carts,
+                            )
+                        apply_layout(target)
+                        strategy_events.append((
+                            picks_t_offset,
+                            f"hwy opt L{target.left_col}·R{target.right_col}",
+                        ))
+                        logger.info(
+                            "[Highway] Jumped to optimum L=%d R=%d",
+                            target.left_col, target.right_col,
+                        )
                     continue
                 if clicked_toggle == "picker_dynamic":
                     pm = dispatcher.pickers
@@ -505,19 +545,7 @@ def main() -> None:
                             )
                             drag_exported = True
                         drag_moved = True
-                        # Keep the live picks/hr curve continuous across the
-                        # rebuild: bank the old world's time and picks into
-                        # the offsets (and pin its final point on the graph).
-                        cur = env.catalog.slotting
-                        if env.sim_elapsed > 0:
-                            picks_history.setdefault(cur, []).append((
-                                picks_t_offset + env.sim_elapsed,
-                                picks_n_offset + float(env.pickers.picks_done),
-                            ))
-                        picks_t_offset += env.sim_elapsed
-                        picks_n_offset += float(env.pickers.picks_done)
-                        set_layout(new_layout)
-                        restart_world(cur, keep_events=True)
+                        apply_layout(new_layout)
                         logger.info(
                             "[Highway] Pillars L=%d R=%d — world rebuilt",
                             new_layout.left_col, new_layout.right_col,
@@ -603,6 +631,7 @@ def main() -> None:
             picks_history=picks_history,
             hover_pillar=hover_pillar,
             drag_pillar=drag_pillar,
+            restart_marks=restart_marks,
         )
         pygame.display.flip()
 
