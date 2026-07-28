@@ -1,3 +1,93 @@
+# ⚡ SESSION HANDOFF — dynamic-highway (read this first)
+Written 2026-07-28 (work done 2026-07-14→15 sim-dates in run records).
+Branch **feature/dynamic-highway**, worktree
+`.claude/worktrees/dynamic-highway` (off main@2bd1f4f — NOT merged; main
+untouched). ~25 commits, 123 tests green (`../../../venv/bin/python -m
+pytest tests/ -q` from the worktree; `./venv` symlinks the main venv).
+GUI: `./venv/bin/python -m agv_simulation` — user runs it via `!`, never
+autonomously. Offscreen render checks work via `SDL_VIDEODRIVER=dummy`
+(build world manually, call renderer, save PNG — see git log for recipes).
+
+## What this branch adds (all committed, all tested)
+1. **Movable highway pillars** — `agv_simulation/layout.py`:
+   `HighwayLayout(left, right, extra_slots)` singleton
+   (`get_layout`/`set_layout`), bounds L≥16 R≤70 gap≥17. Everything
+   derives from it: stations/racking/parking, graph junctions, bank
+   spans, zoning, labels. Drag pillars in the GUI (world rebuilds per
+   column step); `run_headless(highway=(l,r))`. Default layout is
+   byte-identical to the old fixed map.
+2. **STRATEGIES toggles** (all rebuild-safe, crews/fleet/flags carry
+   over via `restart_world` in `__main__.main`): Dynamic pickers
+   (two-pool labour sharing: outer S1/S3+S5/S7/S9 crossing via
+   SOUTH-ONLY detour below the East Highway, central S2/S4/S6/S8;
+   relocation charges real time, crews RE-HOME on arrival), Picker
+   management (auto-staffing: queueing rule
+   `n=ceil(demand/(0.85·rate))` every 5 sim-min, overload-first budget,
+   `set_management()` seeds baselines), Extra pick slots (+1 slot per
+   station; S5's goes ABOVE), Balanced zoning (equal same-side location
+   budgets — see open questions), plus the pre-existing
+   ETA/global/slotting toggles. Panel also has a "→ L16·R50" optimum
+   button (stale — see below) and scrolls with the wheel.
+3. **Graph/strip** — session-continuous LINES/HR graph (offsets survive
+   all rebuilds), grey warm-up (`metrics.EQUILIBRIUM_SECONDS=2700`,
+   measured: rolling rate hits ~90% steady at 40–45 sim-min), flat
+   settled-average lines labelled per state (`ø381 · sequential`),
+   staggered yellow event markers, pink rolling mean-walk-time line
+   (2nd axis), time axis, location spectrum (picks over the 2000
+   locations), station backlog/cap/pickers chart (sticky axes,
+   constraint station red), big total-picker number. Window 1332×780,
+   RESIZABLE|SCALED (aspect locked).
+4. **Model decisions (user-set, do not revert)**: demand is FLAT across
+   all 2000 SKUs (`sku_weight()==1.0`; order book self-regenerates via
+   metadata stamp — `data/order_book.json` committed); south-only picker
+   detour; line==pick; walk calibration FROZEN (μ30s σ10s).
+
+## Key experiment results (results/*.md in this worktree)
+- `results/highway_sweep.md` — pillar sweep found L16/R50 = 26.8 o/hr
+  vs 11.0 default. **CAVEAT: run under OLD popularity demand AND rows
+  L≥31 were poisoned by the since-fixed depot-gridlock bug.** Stale.
+- `results/slots_mgmt_ab.md` — 2×2 factorial (old demand): picker mgmt
+  dominates (+22 o/hr at classic layout); extra slots worthless alone,
+  +4.9 on top of mgmt; classic(23,52)+both BEAT L16/R50+both (42.0 vs
+  38.8) → layout optima are CONDITIONAL on staffing policy.
+- Flat-demand runs (2h seed 42): baseline 23.0 o/hr; mgmt+extra 39.5
+  (S7 still 100% fill, 18 pickers); mgmt+extra+R→62 34.5 (S7 40%);
+  mgmt+extra+balanced-zoning 34.5. Baseline 8.6h GUI soak: 20.6 o/hr,
+  62-min cycles, 707 waiting_for_station stucks (up to 4.5h waits).
+
+## OPEN QUESTIONS / NEXT QUEUE (in priority order)
+1. **The real constraint under flat demand is STATIONS-PER-ORDER, not
+   zone balance.** 20 uniform lines ⇒ an order needs S7 with ~97%
+   probability even under balanced zoning (336-SKU zone) — that's why
+   balanced zoning's first A/B was NEGATIVE (34.5 vs 39.5). Levers to
+   investigate: fewer/bigger zones per side, order batching by zone,
+   splitting orders across carts, or sequencing carts to visit fewer
+   stations. THIS is the frontier toward the 2000–3000 picks/hr target
+   (best so far ~950 picks/hr; picker busy only ~50%, 60–76
+   lines/picker/hr vs 240 target).
+2. **Re-run the pillar sweep** under flat demand + mgmt + extra slots
+   (`experiments/run_highway_sweep.py` — update it to pass the new
+   kwargs). The old optimum is stale; update `layout.OPTIMAL_HIGHWAY`
+   + the panel button + CLAUDE.md note from the result.
+3. **Refresh `constants.OPTIMAL_FLEET`** (fleet targets per strategy
+   combo) — tuned pre-flat-demand; the strategy toggles retarget the
+   fleet with stale numbers.
+4. Dynamic-pool economics changed (south detour ≈ 85 m S1↔S9 one-way,
+   was ~55): re-A/B dynamic vs static under mgmt. Relocation policy is
+   still maximally eager (herding, ~1 move/2 picks) — threshold/
+   worth-the-walk/cooldown hysteresis is designed but NOT implemented
+   (see conversation notes in git log bf20817..73007ff era).
+5. `EXPERIMENT_DESIGN.md` still references deleted `velocity` slotting.
+
+## Gotchas for the next session
+- `run_headless` resets the layout singleton per call; in-process
+  parallelism is UNSAFE (module singletons) — use worker processes
+  (see experiments/run_slots_mgmt_ab.py).
+- Sweeps: `export=False` or you spam results/sim_results.md.
+- After ANY world-geometry change re-verify the default map against
+  the golden invariants (tests do this) — and stress the parameter
+  EXTREMES; golden-diff only proves the default (see tasks/lessons.md).
+- tasks/dynamic-highway-plan.md has the original design + review notes.
 # ⚡ SESSION HANDOFF — read this first (2026-07-14, updated evening session)
 
 ## ⚡ Slotting session update (2026-07-14, parallel session — slotting owner)
