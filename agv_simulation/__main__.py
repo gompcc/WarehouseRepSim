@@ -48,6 +48,7 @@ def _build_world(
     strategies,
     picker_strategy: str,
     fleet_target: tuple[int, int],
+    zoning: str = "nearest",
 ) -> tuple[Environment, Dispatcher]:
     """Fresh deterministic world. Resetting the ID counters and re-seeding
     means order N is byte-identical in every world, so per-slotting runs
@@ -57,7 +58,9 @@ def _build_world(
     # Canonical fixed demand: every world reads the same 15h x 3000
     # lines/hr order book (order N identical across slotting arms).
     set_order_book(ensure_order_book())
-    env = Environment(slotting=slotting, picker_strategy=picker_strategy)
+    env = Environment(
+        slotting=slotting, zoning=zoning, picker_strategy=picker_strategy,
+    )
     verify_graph(env.graph, env.tiles)
     dispatcher = Dispatcher(env.tiles, strategies=strategies, pickers=env.pickers)
     env.agv_preload_remaining, env.preload_remaining = fleet_target
@@ -87,7 +90,10 @@ def main() -> None:
     # into free un-targeted depot tiles); AGVs stream in single-file
     # through the spawn tile.
     fleet_target: tuple[int, int] = (PRELOAD_AGV_COUNT, PRELOAD_CART_COUNT)
-    env, dispatcher = _build_world("sequential", None, "static", fleet_target)
+    zoning: str = "nearest"   # zone-ownership mode; "balanced" via toggle
+    env, dispatcher = _build_world(
+        "sequential", None, "static", fleet_target, zoning,
+    )
     tiles = env.tiles
     graph = env.graph
 
@@ -188,7 +194,7 @@ def main() -> None:
         management = env.pickers.management
         env, dispatcher = _build_world(
             new_slotting, dispatcher.strategies, env.pickers.strategy,
-            fleet_target,
+            fleet_target, zoning,
         )
         env.spawn_enabled = spawn_enabled
         env.pickers.management = management
@@ -423,6 +429,27 @@ def main() -> None:
                     logger.info(
                         "[Slotting] %s -> %s — world restarted (seed %d, fleet %dA/%dC)",
                         old, new, GUI_ORDER_SEED, *fleet_target,
+                    )
+                    continue
+                if clicked_toggle == "zoning_balanced":
+                    zoning = "balanced" if zoning == "nearest" else "nearest"
+                    if env.sim_elapsed > 0:
+                        dispatcher.export_results(env.sim_elapsed, agvs, carts)
+                    # Zone ownership moves -> orders' station visits change:
+                    # full rebuild, session-continuous curve, labelled mark.
+                    # Aisle border/tint colours re-derive from the fresh
+                    # catalog, so the map recolours on the same frame.
+                    bank_curve()
+                    restart_world(env.catalog.slotting, keep_events=True)
+                    restart_marks.append((picks_t_offset, f"zoning {zoning}"))
+                    strategy_events.append(
+                        (picks_t_offset, f"Zoning {zoning}")
+                    )
+                    logger.info(
+                        "[Zoning] -> %s — world restarted; station zone "
+                        "counts: %s", zoning,
+                        {s: len(v) for s, v in sorted(
+                            env.catalog.station_skus.items())},
                     )
                     continue
                 if clicked_toggle == "extra_slots":

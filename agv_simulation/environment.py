@@ -81,6 +81,7 @@ class Environment:
         stuck_threshold: float = STUCK_WARN_SECONDS,
         event_jsonl: str | None = None,
         slotting: str = "sequential",
+        zoning: str = "nearest",
         picker_strategy: str = "static",
         picker_management: bool = False,
         layout: HighwayLayout | None = None,
@@ -95,7 +96,7 @@ class Environment:
         self.graph = build_graph(self.tiles)
         # 2000-SKU aisle catalog (PRD §14); slotting picks the SKU placement
         # strategy (sequential / aisle_proximal / fibonacci)
-        self.catalog = init_catalog(self.tiles, slotting=slotting)
+        self.catalog = init_catalog(self.tiles, slotting=slotting, zoning=zoning)
         # Pickers (PRD §14.9); strategy: static station-bound vs dynamic
         # two-pool labour sharing (outer ring / central island toggle)
         self.pickers = PickerManager(

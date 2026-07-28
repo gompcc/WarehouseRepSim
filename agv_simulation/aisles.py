@@ -56,6 +56,17 @@ logger = logging.getLogger(__name__)
 
 SLOTTING_STRATEGIES = ("sequential", "aisle_proximal", "fibonacci")
 
+# Zoning modes (which station's picker owns a location):
+# - "nearest":  every location belongs to the closest same-side station —
+#   simple, but the middle station of a big bank hoards the zone (under
+#   flat demand S7 owned 22% of the catalog and became a mandatory stop
+#   on ~99% of orders, strangling throughput).
+# - "balanced": same-side stations get EQUAL location budgets, filled
+#   nearest-first — every station on a side carries the same demand, so
+#   no single station is a near-mandatory stop. (With flat demand, equal
+#   locations == equal demand.)
+ZONING_MODES = ("nearest", "balanced")
+
 # ----------------------------------------------------------------------
 # Pick-cycle calibration (user spec, 2026-07-14, re-specified same day):
 # the TOTAL cycle time of a pick — leave cart, walk, grab, walk back —
@@ -140,14 +151,22 @@ class Catalog:
 
     _build_seq = 0  # unique per-build id (id() reuse would alias caches)
 
-    def __init__(self, tiles: dict, slotting: str = "sequential") -> None:
+    def __init__(
+        self, tiles: dict, slotting: str = "sequential",
+        zoning: str = "nearest",
+    ) -> None:
         Catalog._build_seq += 1
         self.catalog_id = Catalog._build_seq
         if slotting not in SLOTTING_STRATEGIES:
             raise ValueError(
                 f"unknown slotting {slotting!r}; pick one of {SLOTTING_STRATEGIES}"
             )
+        if zoning not in ZONING_MODES:
+            raise ValueError(
+                f"unknown zoning {zoning!r}; pick one of {ZONING_MODES}"
+            )
         self.slotting = slotting
+        self.zoning = zoning
         # Snapshot the active highway layout: banks and side boundaries are
         # frozen into this catalog, so a later set_layout() can't skew a
         # live world — the new geometry only exists after a rebuild.
@@ -173,16 +192,50 @@ class Catalog:
         }
         self._loc_station: dict[int, str] = {}
         self._loc_walk: dict[int, float] = {}
-        for loc in self.locations:
-            best_sid, best_d = None, float("inf")
-            for sid in self.station_pos:
-                if self.station_side[sid] != loc.bank:
-                    continue
-                d = self._walk_distance_to(sid, loc.x, loc.walkway_row, loc.bank)
-                if d < best_d:
-                    best_sid, best_d = sid, d
-            self._loc_station[loc.index] = best_sid
-            self._loc_walk[loc.index] = best_d
+        if zoning == "balanced":
+            # Demand-balanced zoning: same-side stations get EQUAL location
+            # budgets, filled nearest-first in geometric order — a station
+            # whose nearest-set exceeds its budget spills the overflow to
+            # its neighbours, so no station hoards the side (the fix for
+            # S7 owning 22% of the catalog under flat demand).
+            by_side: dict[str, list[Location]] = {}
+            for loc in self.locations:
+                by_side.setdefault(loc.bank, []).append(loc)
+            for side, locs in by_side.items():
+                sids = sorted(
+                    s for s in self.station_pos if self.station_side[s] == side
+                )
+                budget = {s: len(locs) / len(sids) for s in sids}
+                for loc in locs:
+                    dists = {
+                        s: self._walk_distance_to(
+                            s, loc.x, loc.walkway_row, loc.bank,
+                        )
+                        for s in sids
+                    }
+                    ranked = sorted(sids, key=lambda s: (dists[s], s))
+                    target = next(
+                        (s for s in ranked if budget[s] >= 1.0), None,
+                    )
+                    if target is None:
+                        target = max(ranked, key=lambda s: budget[s])
+                    budget[target] -= 1.0
+                    self._loc_station[loc.index] = target
+                    self._loc_walk[loc.index] = dists[target]
+        else:
+            # Nearest zoning: shortest same-side walk wins
+            for loc in self.locations:
+                best_sid, best_d = None, float("inf")
+                for sid in self.station_pos:
+                    if self.station_side[sid] != loc.bank:
+                        continue
+                    d = self._walk_distance_to(
+                        sid, loc.x, loc.walkway_row, loc.bank,
+                    )
+                    if d < best_d:
+                        best_sid, best_d = sid, d
+                self._loc_station[loc.index] = best_sid
+                self._loc_walk[loc.index] = best_d
 
         # Slotting: permutation sku -> location
         assign = {
@@ -509,10 +562,12 @@ def _assign_fibonacci(locations, loc_station, loc_walk) -> dict[int, Location]:
 _catalog: Catalog | None = None
 
 
-def init_catalog(tiles: dict, slotting: str = "sequential") -> Catalog:
+def init_catalog(
+    tiles: dict, slotting: str = "sequential", zoning: str = "nearest",
+) -> Catalog:
     """Build (or rebuild) the catalog from the live tile map."""
     global _catalog
-    _catalog = Catalog(tiles, slotting=slotting)
+    _catalog = Catalog(tiles, slotting=slotting, zoning=zoning)
     return _catalog
 
 

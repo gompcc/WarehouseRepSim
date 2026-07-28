@@ -616,6 +616,21 @@ def draw_metrics_panel(
             px + 8, y - 2, PANEL_WIDTH - 16, 16,
         )
         y += 17
+        # Balanced zoning: same-side stations own EQUAL demand instead of
+        # nearest-walk hoarding (rebuild; aisle colours re-derive live)
+        from .aisles import get_catalog as _get_cat
+        try:
+            on = _get_cat().zoning == "balanced"
+        except Exception:
+            on = False
+        color = PANEL_GREEN if on else PANEL_TEXT
+        txt = font_sm.render("  Balanced zoning", True, color)
+        surface.blit(txt, (px + 8, y))
+        _draw_toggle_switch(surface, px + PANEL_WIDTH - 44, y - 1, on)
+        toggle_rects["zoning_balanced"] = pygame.Rect(
+            px + 8, y - 2, PANEL_WIDTH - 16, 16,
+        )
+        y += 17
         # Slotting strategy: clicking cycles to the next arm and RESTARTS
         # the sim (products move, so the world must rebuild)
         from .aisles import get_catalog

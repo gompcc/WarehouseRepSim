@@ -45,6 +45,7 @@ def run_headless(
     strategies: StrategyConfig | dict | None = None,
     export: bool = True,
     slotting: str = "sequential",
+    zoning: str = "nearest",
     picker_strategy: str = "static",
     order_book: bool = True,
     snapshot_interval: float = 60.0,
@@ -103,7 +104,7 @@ def run_headless(
     )
 
     env = Environment(
-        event_jsonl=event_jsonl, slotting=slotting,
+        event_jsonl=event_jsonl, slotting=slotting, zoning=zoning,
         picker_strategy=picker_strategy,
         picker_management=picker_management, layout=layout,
     )
@@ -203,6 +204,7 @@ def run_headless(
         "seed": seed,
         "strategies": dispatcher.strategies.active_names(),
         "slotting": slotting,
+        "zoning": zoning,
         "picker_strategy": picker_strategy,
         "highway": (layout.left_col, layout.right_col),
         "extra_slots": layout.extra_slots,
@@ -229,9 +231,9 @@ def run_headless(
         import os
         os.makedirs(os.path.dirname(results_json) or ".", exist_ok=True)
         metadata_keys = ("num_agvs", "num_carts", "seed", "strategies",
-                        "slotting", "picker_strategy", "picker_management",
-                        "highway", "extra_slots", "sim_duration",
-                        "total_ticks", "wall_clock_seconds")
+                        "slotting", "zoning", "picker_strategy",
+                        "picker_management", "highway", "extra_slots",
+                        "sim_duration", "total_ticks", "wall_clock_seconds")
         payload = {
             "metadata": {k: result[k] for k in metadata_keys},
             "summary": {
