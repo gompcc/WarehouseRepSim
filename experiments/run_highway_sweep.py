@@ -34,6 +34,16 @@ GRID_STEP = 3
 CONFIRM_TOP = 5
 CONFIRM_SEEDS = (41, 42, 43)
 WORKERS = 6   # leave headroom for an interactive GUI session
+# The policy stack every layout is judged under. Re-swept 2026-07-29:
+# the original sweep ran bare-baseline under OLD popularity demand (and
+# rows L>=31 hit the since-fixed depot-gridlock bug) — layout optima are
+# CONDITIONAL on staffing policy (results/slots_mgmt_ab.md), so the grid
+# must be scored under the winning stack, now mgmt+extra+batched release
+# (results/batch_release_ab.md).
+POLICY_KWARGS = dict(
+    picker_management=True, extra_slots=True, batch_release=True,
+)
+POLICY_LABEL = "picker mgmt + extra slots + batched release"
 RESULTS_MD = os.path.join(
     os.path.dirname(os.path.dirname(os.path.abspath(__file__))),
     "results", "highway_sweep.md",
@@ -57,6 +67,7 @@ def one_run(args: tuple[int, int, int, float]) -> dict:
     r = run_headless(
         sim_duration=duration, seed=seed, highway=(left, right),
         export=False, snapshot_interval=0.0, log_level="ERROR",
+        **POLICY_KWARGS,
     )
     return {
         "left": left, "right": right, "seed": seed,
@@ -128,7 +139,7 @@ def main() -> None:
                 f"seed 42. Confirm: top {CONFIRM_TOP} x "
                 f"{confirm_h / 3600.0:.1f}h x seeds {CONFIRM_SEEDS}. "
                 f"10 AGVs / 25 carts, sequential slotting, baseline "
-                f"dispatch.\n\n")
+                f"dispatch, {POLICY_LABEL} (flat demand).\n\n")
         f.write("### Screen (top 15 of grid, seed 42)\n\n")
         f.write("| L | R | orders/hr | picks/hr | blocked | stuck |\n")
         f.write("|---|---|-----------|----------|---------|-------|\n")

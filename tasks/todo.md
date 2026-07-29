@@ -15,28 +15,37 @@ picker crowding).
       the set; walk_distance is geometric (any same-side station can
       pick any same-side slot, priced correctly); no split/batch code
       exists; 2-pager rec #4 already endorses zone-batched release.
-- [ ] Analytic pass on the real order book: stops/order + walk-time
-      deltas for batched release (no sim yet)
-- [ ] Implement **zone-batched order release** toggle
-      (`batch_release`): per side, all of an order's lines go to ONE
-      same-side station, rotated by order.id (spread policy — walk-
-      optimal choice would collapse onto 3 middle stations and
-      saturate their 4-5 cart slots). Pure order-release seam; zoning/
-      slotting/dispatcher untouched. Module-global flag in models.py
-      following set_order_seed pattern.
-- [ ] Golden check: default config byte-identical; stress extremes
-      (lessons.md 2026-07-15) + tests
-- [ ] A/B: 2h seed-42, mgmt+extra baseline 39.5 o/hr vs consolidated
-      variants; report picks/hr toward the 2000–3000 target
-- [ ] Queue #2 (pillar sweep re-run under flat+mgmt+extra) in background
-      if CPU free
-- [ ] Queue #5: EXPERIMENT_DESIGN.md stale `velocity` refs (trivial) — in
-      progress: only 1 ref left (deliberate deletion note); real staleness
-      is the 4-arm matrix counts + pre-flat-demand popularity phrasing
+- [x] Analytic pass: E[stops] math done inline (9 zones → 8.2 analytic;
+      measured 6.71 — nearest zoning hoards + small orders)
+- [x] Implement **zone-batched order release** toggle (`batch_release`)
+      — commit 96f3e9f. Flag lives on Catalog (not models global) so
+      station_avg_walk_s/longest_walk_m price the side-wide pool and
+      auto-staffing stays honest. Order.__init__ consumes
+      batched_release_map; rotation = order_id % n_side_stations.
+      GUI toggle "Batched release (1 stop/side)" + run_headless kwarg
+      + avg_stations_per_order result field.
+- [x] Golden check: default 1h seed-42 EXACT pre/post match (19.999
+      o/hr, cycle 2209.405s, 570 picks); 130 tests green (7 new)
+- [x] A/B DONE — see results/batch_release_ab.md. **mgmt+extra+batch
+      55.8 o/hr mean (3 seeds, ranges disjoint) vs 35.5 baseline =
+      +57%; picks/hr ~1220 (new best; was ~950); st/ord 6.99→2.91;
+      station saturation GONE (max fill 0.6). Batch alone ≈ +1.5 only
+      — pair with management. Constraint moved to AGV transport
+      (util 0.88-0.96, pickers 54% busy) → fleet refresh is next.**
+- [ ] Queue #2 (pillar sweep re-run under flat+mgmt+extra+batch) in
+      background
+- [x] Queue #5: EXPERIMENT_DESIGN.md — fixed stale 4-arm matrix counts
+      + run budget; flat-demand update noted in F1 (the one remaining
+      `velocity` mention is the deliberate deletion note)
+- [ ] Fleet probe for the batch winner (AGV-bound now; queue #3)
 - [ ] Review section + handoff update
 
 ## Review / Results
-(fills in as work completes)
+- Batched release: results/batch_release_ab.md (headline above).
+- Next frontier after AGVs: pickers only 50 lines/picker/hr vs 240
+  target — once transport is unblocked, pick-cycle time (walk 39s
+  side-wide) becomes the lever again (tighter rotation? 2-station
+  sides? demand-aware choice).
 
 ---
 
