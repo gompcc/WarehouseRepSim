@@ -27,12 +27,16 @@ SPEED_STEPS = [0.5, 1.0, 2.0, 5.0, 10.0, 20.0, 50.0, 100.0, 200.0]
 # Optimal fleet (AGVs, carts) per dispatch-strategy combo, keyed by
 # (eta_reservations, global_assignment). Flipping a GUI toggle retargets
 # the live fleet to the new combo's optimum via Environment.retarget_fleet.
-# From the 2026-07-14 fleet screen (2h sims, seed 42, sequential slotting;
-# results/runs/fleet_screen_2026-07-14.json). Deltas across fleets are
-# small on the station-bound sequential layout — refine with multi-seed
-# runs per slotting when the experiment matrix runs.
+# Baseline (False, False) refreshed 2026-07-29 from the fleet probe under
+# the winning stack — flat demand + mgmt + extra slots + batched release
+# at OPTIMAL_HIGHWAY (results/fleet_probe.md): 18A/30C = 93.3 orders/hr
+# mean / ~1990 picks/hr (3 seeds). Past 18 AGVs throughput plateaus
+# (~94 o/hr at 22A, util 0.43) — the constraint is no longer transport.
+# The ETA/HUN rows are STALE (2026-07-14 fleet screen, popularity-era
+# station-bound regime; those strategies were rejected in FINDINGS) and
+# kept only so the toggles still retarget somewhere sane.
 OPTIMAL_FLEET: dict[tuple[bool, bool], tuple[int, int]] = {
-    (False, False): (8, 15),
+    (False, False): (18, 30),
     (True, False): (12, 20),
     (False, True): (12, 25),
     (True, True): (8, 15),

@@ -32,20 +32,44 @@ picker crowding).
       station saturation GONE (max fill 0.6). Batch alone ≈ +1.5 only
       — pair with management. Constraint moved to AGV transport
       (util 0.88-0.96, pickers 54% busy) → fleet refresh is next.**
-- [ ] Queue #2 (pillar sweep re-run under flat+mgmt+extra+batch) in
-      background
+- [x] Queue #2 DONE — pillar sweep re-run under the winning stack
+      (70-layout screen + 2h×3-seed confirm): **OPTIMAL_HIGHWAY →
+      (25, 68), 61.8 o/hr mean vs 55.8 default, ~1390 picks/hr**;
+      wide span grows the 4-station central bank. Old (16,50) retired
+      (commit 95848c8; results/highway_sweep.md).
 - [x] Queue #5: EXPERIMENT_DESIGN.md — fixed stale 4-arm matrix counts
       + run budget; flat-demand update noted in F1 (the one remaining
       `velocity` mention is the deliberate deletion note)
-- [ ] Fleet probe for the batch winner (AGV-bound now; queue #3)
-- [ ] Review section + handoff update
+- [x] Queue #3 DONE — fleet probe (experiments/run_fleet_probe.py,
+      5×3 grid + 3-seed confirm + grid-edge check, all at L25/R68
+      under the winning stack): **18A/30C = 93.3 o/hr mean /
+      ~1990 picks/hr — THE 2000 PICKS/HR TARGET FLOOR IS REACHED**
+      (seed 41 hit 2041). Plateau past 18 AGVs (~94 at 22A, util
+      0.43) → constraint moved OFF transport again.
+      OPTIMAL_FLEET[(False,False)] → (18, 30); ETA/HUN rows left but
+      marked stale. results/fleet_probe.md.
+- [x] Review section + handoff update
 
-## Review / Results
-- Batched release: results/batch_release_ab.md (headline above).
-- Next frontier after AGVs: pickers only 50 lines/picker/hr vs 240
-  target — once transport is unblocked, pick-cycle time (walk 39s
-  side-wide) becomes the lever again (tighter rotation? 2-station
-  sides? demand-aware choice).
+## Review / Results (2026-07-29)
+Session total: 950 → ~1990 picks/hr best-known (2.1×), three stacked
+levers, each verified on 3 seeds with disjoint/near-disjoint ranges:
+1. Batched release (+57%): results/batch_release_ab.md, commit 96f3e9f
+2. Pillar re-sweep L25/R68 (+11%): results/highway_sweep.md, 95848c8
+3. Fleet 18A/30C (+51% over 10A/25C): results/fleet_probe.md
+Full stack: batch+mgmt+extra @ L25/R68 @ 18A/30C = 93.3 o/hr.
+
+NEXT FRONTIER — what binds at ~2030 picks/hr? AGV util is only ~0.5,
+blocked ~2%, stations unsaturated. Candidates, in checking order:
+(a) MANAGE_MAX_TOTAL=30 picker cap (~26 busy-equivalent needed at 39s
+    side-wide walks — nearly binding; it's a policy constant, ask user
+    before raising);
+(b) station cart slots (5-6 with extra_slots) vs 93 carts/hr × 3 stops;
+(c) Box Depot (60s × 8 tiles) / Pack-off dwell;
+(d) pick-cycle time itself: 50 lines/picker/hr vs 240 target — walk
+    39s side-wide; tighter batching (2 stations/side? demand-aware
+    station choice with load spread?) trades stops for walk again.
+Also still queued: #4 dynamic-pool re-A/B + relocation hysteresis
+(designed, not implemented).
 
 ---
 
