@@ -1,3 +1,45 @@
+# SESSION 2026-07-29 — stations-per-order frontier (queue #1)
+
+Continuing from the handoff queue below. Priority #1: attack STATIONS-PER-ORDER
+(the real flat-demand constraint; balanced zoning A/B was negative because it
+doesn't reduce stops). Analytic motivation: E[distinct stations] =
+Σ(1−(1−p_i)^L); 9 balanced zones @ L=20 → 8.2 stops/order, 4 zones → 4.0,
+3 zones → 3.0. Zone consolidation halves stops; sim must arbitrate the
+trade-offs (longer picker walks, fewer parallel station slots, per-station
+picker crowding).
+
+## Plan
+- [x] Explore: map zoning/order/dispatcher/picker seams (subagent).
+      Key facts: Order.__init__ (models.py:121-129) buckets lines via
+      catalog.station_of → stations_to_visit; dispatcher only consumes
+      the set; walk_distance is geometric (any same-side station can
+      pick any same-side slot, priced correctly); no split/batch code
+      exists; 2-pager rec #4 already endorses zone-batched release.
+- [ ] Analytic pass on the real order book: stops/order + walk-time
+      deltas for batched release (no sim yet)
+- [ ] Implement **zone-batched order release** toggle
+      (`batch_release`): per side, all of an order's lines go to ONE
+      same-side station, rotated by order.id (spread policy — walk-
+      optimal choice would collapse onto 3 middle stations and
+      saturate their 4-5 cart slots). Pure order-release seam; zoning/
+      slotting/dispatcher untouched. Module-global flag in models.py
+      following set_order_seed pattern.
+- [ ] Golden check: default config byte-identical; stress extremes
+      (lessons.md 2026-07-15) + tests
+- [ ] A/B: 2h seed-42, mgmt+extra baseline 39.5 o/hr vs consolidated
+      variants; report picks/hr toward the 2000–3000 target
+- [ ] Queue #2 (pillar sweep re-run under flat+mgmt+extra) in background
+      if CPU free
+- [ ] Queue #5: EXPERIMENT_DESIGN.md stale `velocity` refs (trivial) — in
+      progress: only 1 ref left (deliberate deletion note); real staleness
+      is the 4-arm matrix counts + pre-flat-demand popularity phrasing
+- [ ] Review section + handoff update
+
+## Review / Results
+(fills in as work completes)
+
+---
+
 # ⚡ SESSION HANDOFF — dynamic-highway (read this first)
 Written 2026-07-28 (work done 2026-07-14→15 sim-dates in run records).
 Branch **feature/dynamic-highway**, worktree

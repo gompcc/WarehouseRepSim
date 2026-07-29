@@ -49,6 +49,7 @@ def _build_world(
     picker_strategy: str,
     fleet_target: tuple[int, int],
     zoning: str = "nearest",
+    batch_release: bool = False,
 ) -> tuple[Environment, Dispatcher]:
     """Fresh deterministic world. Resetting the ID counters and re-seeding
     means order N is byte-identical in every world, so per-slotting runs
@@ -60,6 +61,7 @@ def _build_world(
     set_order_book(ensure_order_book())
     env = Environment(
         slotting=slotting, zoning=zoning, picker_strategy=picker_strategy,
+        batch_release=batch_release,
     )
     verify_graph(env.graph, env.tiles)
     dispatcher = Dispatcher(env.tiles, strategies=strategies, pickers=env.pickers)
@@ -91,8 +93,9 @@ def main() -> None:
     # through the spawn tile.
     fleet_target: tuple[int, int] = (PRELOAD_AGV_COUNT, PRELOAD_CART_COUNT)
     zoning: str = "nearest"   # zone-ownership mode; "balanced" via toggle
+    batch_release: bool = False   # zone-batched order release via toggle
     env, dispatcher = _build_world(
-        "sequential", None, "static", fleet_target, zoning,
+        "sequential", None, "static", fleet_target, zoning, batch_release,
     )
     tiles = env.tiles
     graph = env.graph
@@ -194,7 +197,7 @@ def main() -> None:
         management = env.pickers.management
         env, dispatcher = _build_world(
             new_slotting, dispatcher.strategies, env.pickers.strategy,
-            fleet_target, zoning,
+            fleet_target, zoning, batch_release,
         )
         env.spawn_enabled = spawn_enabled
         env.pickers.management = management
@@ -450,6 +453,29 @@ def main() -> None:
                         "counts: %s", zoning,
                         {s: len(v) for s, v in sorted(
                             env.catalog.station_skus.items())},
+                    )
+                    continue
+                if clicked_toggle == "batch_release":
+                    batch_release = not batch_release
+                    state = "ON" if batch_release else "OFF"
+                    if env.sim_elapsed > 0:
+                        dispatcher.export_results(env.sim_elapsed, agvs, carts)
+                    # Orders' station derivation changes -> full rebuild
+                    # (same reset semantics as the zoning toggle); walk
+                    # stats and staffing rates re-derive side-wide.
+                    bank_curve()
+                    restart_world(env.catalog.slotting, keep_events=True)
+                    restart_marks.append(
+                        (picks_t_offset, f"batched release {state.lower()}")
+                    )
+                    strategy_events.append(
+                        (picks_t_offset, f"Batched release {state}")
+                    )
+                    logger.info(
+                        "[BatchRelease] -> %s — world restarted; orders now "
+                        "visit %s", state,
+                        "≤1 station per side (~3 stops)" if batch_release
+                        else "each line's zone station (~8 stops)",
                     )
                     continue
                 if clicked_toggle == "extra_slots":

@@ -631,6 +631,20 @@ def draw_metrics_panel(
             px + 8, y - 2, PANEL_WIDTH - 16, 16,
         )
         y += 17
+        # Batched release: one station per side takes ALL of an order's
+        # lines on that side (~3 stops instead of ~8; rebuild)
+        try:
+            on = _get_cat().batch_release
+        except Exception:
+            on = False
+        color = PANEL_GREEN if on else PANEL_TEXT
+        txt = font_sm.render("  Batched release (1 stop/side)", True, color)
+        surface.blit(txt, (px + 8, y))
+        _draw_toggle_switch(surface, px + PANEL_WIDTH - 44, y - 1, on)
+        toggle_rects["batch_release"] = pygame.Rect(
+            px + 8, y - 2, PANEL_WIDTH - 16, 16,
+        )
+        y += 17
         # Slotting strategy: clicking cycles to the next arm and RESTARTS
         # the sim (products move, so the world must rebuild)
         from .aisles import get_catalog

@@ -153,10 +153,11 @@ class Catalog:
 
     def __init__(
         self, tiles: dict, slotting: str = "sequential",
-        zoning: str = "nearest",
+        zoning: str = "nearest", batch_release: bool = False,
     ) -> None:
         Catalog._build_seq += 1
         self.catalog_id = Catalog._build_seq
+        self.batch_release = batch_release
         if slotting not in SLOTTING_STRATEGIES:
             raise ValueError(
                 f"unknown slotting {slotting!r}; pick one of {SLOTTING_STRATEGIES}"
@@ -190,6 +191,9 @@ class Catalog:
         self.station_side: dict[str, str] = {
             sid: _station_side(sx) for sid, (sx, _sy) in self.station_pos.items()
         }
+        self.side_stations: dict[str, list[str]] = {}
+        for sid in sorted(self.station_pos):
+            self.side_stations.setdefault(self.station_side[sid], []).append(sid)
         self._loc_station: dict[int, str] = {}
         self._loc_walk: dict[int, float] = {}
         if zoning == "balanced":
@@ -317,6 +321,37 @@ class Catalog:
     def station_of(self, sku: int) -> str:
         return self.slots[sku].station
 
+    def side_skus(self, side: str) -> list[int]:
+        """All SKUs slotted on *side* (any zone) — the pool a station's
+        pickers draw from under batched release. Cached."""
+        if not hasattr(self, "_side_skus"):
+            out: dict[str, list[int]] = {}
+            for sku, slot in self.slots.items():
+                out.setdefault(slot.bank, []).append(sku)
+            for skus in out.values():
+                skus.sort()
+            self._side_skus = out
+        return self._side_skus.get(side, [])
+
+    def batched_release_map(self, skus: list[int], order_id: int) -> dict[int, str]:
+        """Zone-batched order release (2-pager recommendation #4): every
+        line on a side is assigned to ONE same-side station, so an order
+        visits at most one station per side (~3 stops instead of ~8 under
+        flat 20-line orders — the stations-per-order tax is set upstream
+        by the WMS, free to fix in software). The station rotates with the
+        order id: under flat demand the walk-optimal choice would send
+        every order to the same centroid station and saturate its 4-5
+        cart slots, so spreading orders across each side's stations keeps
+        every station's slots in play. Pickers legally reach any same-side
+        slot (they never cross the highway); the longer cross-zone walks
+        are priced by walk_distance/walk_time_seconds as usual."""
+        result: dict[int, str] = {}
+        for sku in skus:
+            side = self.slots[sku].bank
+            sids = self.side_stations[side]
+            result[sku] = sids[order_id % len(sids)]
+        return result
+
     # -- demand ------------------------------------------------------------
 
     def _weighted_sample(self, pool: list[int], n: int, rng) -> list[int]:
@@ -397,9 +432,22 @@ class Catalog:
                     (self.walk_distance(sid, sku) for sku in skus),
                     default=0.0,
                 )
-                for sid, skus in self.station_skus.items()
+                for sid, skus in self._pick_pool().items()
             }
         return self._longest_walk
+
+    def _pick_pool(self) -> dict[str, list[int]]:
+        """The SKUs a station's pickers actually fetch: its zone normally,
+        its whole SIDE under batched release (an order's side batch lands
+        on any same-side station, so walk stats and the auto-staffing
+        service rate must price side-wide walks or management would
+        systematically understaff)."""
+        if self.batch_release:
+            return {
+                sid: self.side_skus(self.station_side[sid])
+                for sid in self.station_pos
+            }
+        return self.station_skus
 
     def station_avg_walk_s(self) -> dict[str, float]:
         """Popularity-weighted mean pick-cycle time (s) per station: the
@@ -408,7 +456,7 @@ class Catalog:
         of ``demand_weighted_walk_m``. Shown on the map (``μNNs``). Cached."""
         if not hasattr(self, "_station_avg_walk"):
             out: dict[str, float] = {}
-            for sid, skus in self.station_skus.items():
+            for sid, skus in self._pick_pool().items():
                 total_w = 0.0
                 total_t = 0.0
                 for sku in skus:
@@ -564,10 +612,13 @@ _catalog: Catalog | None = None
 
 def init_catalog(
     tiles: dict, slotting: str = "sequential", zoning: str = "nearest",
+    batch_release: bool = False,
 ) -> Catalog:
     """Build (or rebuild) the catalog from the live tile map."""
     global _catalog
-    _catalog = Catalog(tiles, slotting=slotting, zoning=zoning)
+    _catalog = Catalog(
+        tiles, slotting=slotting, zoning=zoning, batch_release=batch_release,
+    )
     return _catalog
 
 

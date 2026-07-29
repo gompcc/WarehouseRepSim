@@ -84,6 +84,7 @@ class Environment:
         zoning: str = "nearest",
         picker_strategy: str = "static",
         picker_management: bool = False,
+        batch_release: bool = False,
         layout: HighwayLayout | None = None,
     ) -> None:
         # Dynamic highway: an explicit layout is installed as the active
@@ -96,7 +97,10 @@ class Environment:
         self.graph = build_graph(self.tiles)
         # 2000-SKU aisle catalog (PRD §14); slotting picks the SKU placement
         # strategy (sequential / aisle_proximal / fibonacci)
-        self.catalog = init_catalog(self.tiles, slotting=slotting, zoning=zoning)
+        self.catalog = init_catalog(
+            self.tiles, slotting=slotting, zoning=zoning,
+            batch_release=batch_release,
+        )
         # Pickers (PRD §14.9); strategy: static station-bound vs dynamic
         # two-pool labour sharing (outer ring / central island toggle)
         self.pickers = PickerManager(

@@ -48,8 +48,8 @@ per-run rows (arm, seed, config, metrics) for the figures.
 | Decision rule | Adopt an arm iff paired mean Δ(primary metric) ≥ **+3%** vs its baseline AND the delta is positive on ≥ 4/5 seeds. Report mean [min–max], never a bare mean. | Guards against seed noise without heavyweight stats |
 | Validity gate | `stuck_report.stuck_events == 0`, `teleport_events == 0`, `carts_left_early` not exploding vs baseline. A run failing the gate invalidates the arm until fixed — no averaging over broken runs. **Known issue (2026-07-14): the stuck watchdog flags carts legitimately queued in PICKING (~90–100 events/h at baseline) — exempt queued-for-picker carts from the watchdog before running, or the gate can never pass.** | Physics/deadlock bugs masquerade as policy effects |
 
-Run budget: Section A = 4×5 + 4×3 = 32 runs; Section B = 8×5 + 3×5 = 55 runs;
-+1 headline cell ×5 = ~92 runs ≈ 60 min wall at 8 parallel workers
+Run budget: Section A = 3×5 + 3×3 = 24 runs; Section B = 8×5 + 3×5 = 55 runs;
++1 headline cell ×5 = ~84 runs ≈ 55 min wall at 8 parallel workers
 (clone `experiments/run_strategy_comparison.py`'s `ProcessPoolExecutor` pattern).
 
 ---
@@ -60,11 +60,12 @@ Run budget: Section A = 4×5 + 4×3 = 32 runs; Section B = 8×5 + 3×5 = 55 runs
 3 toggleable slotting strategies (`velocity` DELETED at user request,
 2026-07-14 — its 8h seed-42 result, 32.3 steady o/hr vs sequential 11.7,
 survives in `results/2pager_2026-07-14.md` as an upper-bound reference
-only), with normal-distributed SKU popularity active in **all** arms
-(popularity must not be a hidden difference between arms).
+only), with the same demand model active in **all** arms (demand must not
+be a hidden difference between arms; since 2026-07-15 demand is FLAT
+across SKUs — see F1 update below).
 
-**Matrix:** 4 strategies × 5 seeds at 10/25 (20 runs, decision set)
-+ 4 strategies × 3 seeds (11, 42, 77) at 14/25 (12 runs, ranking-robustness
+**Matrix:** 3 strategies × 5 seeds at 10/25 (15 runs, decision set)
++ 3 strategies × 3 seeds (11, 42, 77) at 14/25 (9 runs, ranking-robustness
 check only — one sentence in the doc: "ranking unchanged with transport slack"
 or a caveat).
 
@@ -165,6 +166,11 @@ number is one the reader can't act on.
   is a book entry, so arms are identical by construction. Seeds read the
   same book at deterministic per-seed offsets — paired across arms,
   varying across seeds.
+  **Flat-demand update (2026-07-15, user-set):** `sku_weight()` is now
+  uniform (1.0 for every SKU) and the order book self-regenerated under
+  flat demand (metadata stamp). "Half-normal product frequency" above is
+  historical; frequency-based slotting now sees near-uniform counts, and
+  all popularity-era results are re-based (see FINDINGS caveats).
 - **F2 — Never recalibrate walk time per arm.** `WALK_TIME_FIXED/SCALE` were
   fit to make the *baseline* geometry hit μ30/σ10. Re-fitting per slotting
   arm would erase the very effect under test. Freeze the constants; report

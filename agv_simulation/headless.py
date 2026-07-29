@@ -29,6 +29,7 @@ def _reset_id_counters() -> None:
     Cart._next_id = 1
     Order._next_id = 1
     Order.sizes = []
+    Order.station_counts = []
     Job._next_id = 1
     Picker._next_id = 1
 
@@ -53,6 +54,7 @@ def run_headless(
     highway: tuple[int, int] | None = None,
     picker_management: bool = False,
     extra_slots: bool = False,
+    batch_release: bool = False,
 ) -> dict:
     """Run the simulation without pygame, using a fixed timestep.
 
@@ -106,7 +108,8 @@ def run_headless(
     env = Environment(
         event_jsonl=event_jsonl, slotting=slotting, zoning=zoning,
         picker_strategy=picker_strategy,
-        picker_management=picker_management, layout=layout,
+        picker_management=picker_management, batch_release=batch_release,
+        layout=layout,
     )
     env.agv_preload_remaining = num_agvs
     env.preload_remaining = num_carts
@@ -209,9 +212,14 @@ def run_headless(
         "highway": (layout.left_col, layout.right_col),
         "extra_slots": layout.extra_slots,
         "picker_management": picker_management,
+        "batch_release": batch_release,
         "order_book": order_book,
         "completed_orders": completed,
         "orders_per_hour": orders_per_hour,
+        "avg_stations_per_order": (
+            sum(Order.station_counts) / len(Order.station_counts)
+            if Order.station_counts else 0.0
+        ),
         "avg_cycle_time": avg_cycle,
         "cycle_times": cycle_times,
         "order_completion_times": list(dispatcher.order_completion_times),
@@ -232,8 +240,9 @@ def run_headless(
         os.makedirs(os.path.dirname(results_json) or ".", exist_ok=True)
         metadata_keys = ("num_agvs", "num_carts", "seed", "strategies",
                         "slotting", "zoning", "picker_strategy",
-                        "picker_management", "highway", "extra_slots",
-                        "sim_duration", "total_ticks", "wall_clock_seconds")
+                        "picker_management", "batch_release", "highway",
+                        "extra_slots", "sim_duration", "total_ticks",
+                        "wall_clock_seconds")
         payload = {
             "metadata": {k: result[k] for k in metadata_keys},
             "summary": {

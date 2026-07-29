@@ -95,6 +95,10 @@ class Order:
     # Sizes of every order created this run (live lines/order stats in the
     # GUI); reset with the ID counters at world build.
     sizes: list[int] = []
+    # Station-visit count of every order created this run — THE metric the
+    # batched-release lever attacks (~8 under flat 20-line orders, ~3
+    # batched); reset with the ID counters at world build.
+    station_counts: list[int] = []
 
     def __init__(self) -> None:
         self.order_id: int = Order._next_id
@@ -118,15 +122,25 @@ class Order:
             # orders, which is what makes slotting strategies matter.
             skus = catalog.sample_skus(n_lines, rng)
 
+        # Zone-batched release: one station per side takes ALL of this
+        # order's lines on that side (~3 stops instead of ~8) — see
+        # Catalog.batched_release_map. Off: each line goes to its zone's
+        # station (the classic derivation).
+        station_for = (
+            catalog.batched_release_map(skus, self.order_id)
+            if catalog.batch_release else None
+        )
         self.lines: list[int] = []                     # flat SKU ids, one per line
         self.skus_by_station: dict[int, list[int]] = {}
         for sku in skus:
-            num = int(catalog.station_of(sku)[1:])
+            sid = station_for[sku] if station_for else catalog.station_of(sku)
+            num = int(sid[1:])
             self.skus_by_station.setdefault(num, []).append(sku)
             self.lines.append(sku)
 
         Order.sizes.append(len(self.lines))
         self.stations_to_visit: list[int] = sorted(self.skus_by_station)
+        Order.station_counts.append(len(self.stations_to_visit))
         self.completed_stations: list[int] = []
         self.picked_skus: set[int] = set()
         self.packed: bool = False  # True once the cart has reached Pack-off
