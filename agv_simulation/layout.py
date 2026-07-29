@@ -35,10 +35,14 @@ RIGHT_COL_MAX = 70
 MIN_PILLAR_GAP = 17
 
 # Throughput-optimal pillar columns from experiments/run_highway_sweep.py
-# (2026-07-15: 70-layout screen + 2h x 3-seed confirm — 26.8 orders/hr vs
-# 11.0 at the classic (23, 52) with the 10 AGV / 25 cart fleet). The GUI's
-# panel button jumps straight here.
-OPTIMAL_HIGHWAY: tuple[int, int] = (16, 50)
+# (re-swept 2026-07-29 under the winning policy stack — flat demand +
+# picker mgmt + extra slots + batched release: 70-layout screen + 2h x
+# 3-seed confirm, 61.8 orders/hr mean vs 55.8 at the classic (23, 52),
+# 10 AGV / 25 cart fleet). Wide span wins under batching: it grows the
+# 4-station central bank. The old (16, 50) optimum was bare-baseline
+# under popularity demand — layout optima are CONDITIONAL on policy.
+# The GUI's panel button jumps straight here.
+OPTIMAL_HIGHWAY: tuple[int, int] = (25, 68)
 
 # Racking run rows per bank (fixed; only column spans move with the pillars)
 WEST_RUN_ROWS = (10, 13, 16, 19, 22, 25, 28, 31, 34, 37)
