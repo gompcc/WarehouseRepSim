@@ -8694,3 +8694,201 @@ AGV util: 10/16 active | Blocked: 0 | Waiting carts: 1 | Completed orders: 1188
 Pickers: 16634 picks | walk μ39s σ13s | busy 76% | 2435 carts served, 0 left early
 
 AGV util: 11/18 active | Blocked: 0 | Waiting carts: 1 | Completed orders: 828
+
+---
+## Run: 2026-08-11 14:37
+**Config**: 10 AGVs, 25 carts | Packoff 20.0s, Pick picker-gated (walk μ30s + grab 10s)
+**Elapsed**: 3h 3m | **Orders**: 61 | **Orders/hr**: 19.9 | **Avg cycle**: 55m 49s
+**Strategies**: baseline | Seed: 42
+**Constraint**: S5 (100%)
+
+| Resource | Pressure |
+|----------|----------|
+| S5         | ██████████ 100% |
+| AGVs       | ████████░░ 80% |
+| Carts      | ███░░░░░░░ 36% |
+| Highway    | ███░░░░░░░ 30% |
+| Pack-off   | ░░░░░░░░░░ 0% |
+
+| Station | Fill |
+|---------|------|
+| S1         | 2/5 (40%) |
+| S2         | 1/4 (25%) |
+| S3         | 2/4 (50%) |
+| S4         | 0/4 (0%) |
+| S5         | 4/4 (100%) |
+| S6         | 0/4 (0%) |
+| S7         | 4/4 (100%) |
+| S8         | 1/4 (25%) |
+| S9         | 4/4 (100%) |
+| Pack_off   | 2/4 (50%) |
+| Box_Depot  | 3/8 (38%) |
+
+Pickers: 1406 picks | walk μ30s σ10s | busy 52% | 522 carts served, 0 left early
+
+AGV util: 8/10 active | Blocked: 3 | Waiting carts: 8 | Completed orders: 61
+
+---
+## Run: 2026-08-11 14:50
+**Config**: 15 AGVs, 25 carts | Packoff 20.0s, Pick picker-gated (walk μ30s + grab 10s)
+**Elapsed**: 42h 33m | **Orders**: 1100 | **Orders/hr**: 25.8 | **Avg cycle**: 57m 39s
+**Strategies**: hungarian | Seed: 42
+**Constraint**: S3 (100%)
+
+| Resource | Pressure |
+|----------|----------|
+| S3         | ██████████ 100% |
+| Carts      | ████████░░ 84% |
+| AGVs       | ██████░░░░ 66% |
+| Pack-off   | ░░░░░░░░░░ 0% |
+| Highway    | ░░░░░░░░░░ 0% |
+
+| Station | Fill |
+|---------|------|
+| S1         | 4/5 (80%) |
+| S2         | 2/4 (50%) |
+| S3         | 4/4 (100%) |
+| S4         | 3/4 (75%) |
+| S5         | 1/4 (25%) |
+| S6         | 4/4 (100%) |
+| S7         | 0/4 (0%) |
+| S8         | 3/4 (75%) |
+| S9         | 1/4 (25%) |
+| Pack_off   | 1/4 (25%) |
+| Box_Depot  | 4/8 (50%) |
+
+Pickers: 21905 picks | walk μ27s σ8s | busy 29% | 8035 carts served, 0 left early
+
+AGV util: 10/15 active | Blocked: 0 | Waiting carts: 2 | Completed orders: 1100
+
+---
+## Run: 2026-08-11 14:52
+**Config**: 10 AGVs, 25 carts | Packoff 20.0s, Pick picker-gated (walk μ30s + grab 10s)
+**Elapsed**: 0h 27m | **Orders**: 1 | **Orders/hr**: 2.2 | **Avg cycle**: 17m 40s
+**Strategies**: baseline | Seed: 42
+**Constraint**: S3 (100%)
+
+| Resource | Pressure |
+|----------|----------|
+| S3         | ██████████ 100% |
+| AGVs       | ██████████ 100% |
+| Carts      | ███░░░░░░░ 36% |
+| Pack-off   | ░░░░░░░░░░ 0% |
+| Highway    | ░░░░░░░░░░ 0% |
+
+| Station | Fill |
+|---------|------|
+| S1         | 4/5 (80%) |
+| S2         | 0/4 (0%) |
+| S3         | 4/4 (100%) |
+| S4         | 0/4 (0%) |
+| S5         | 4/4 (100%) |
+| S6         | 3/4 (75%) |
+| S7         | 4/4 (100%) |
+| S8         | 3/4 (75%) |
+| S9         | 4/4 (100%) |
+| Pack_off   | 1/4 (25%) |
+| Box_Depot  | 1/8 (12%) |
+
+Pickers: 255 picks | walk μ28s σ10s | busy 39% | 105 carts served, 0 left early
+
+AGV util: 10/10 active | Blocked: 0 | Waiting carts: 8 | Completed orders: 1
+
+---
+## Run: 2026-08-11 14:52
+**Config**: 10 AGVs, 8 carts | Packoff 20.0s, Pick picker-gated (walk μ30s + grab 10s)
+**Elapsed**: 0h 2m | **Orders**: 0 | **Orders/hr**: 0.0 | **Avg cycle**: 0m 0s
+**Strategies**: baseline | Seed: 42
+**Constraint**: S1 (100%)
+
+| Resource | Pressure |
+|----------|----------|
+| S1         | ██████████ 100% |
+| Carts      | ██████████ 100% |
+| AGVs       | ████████░░ 80% |
+| Pack-off   | ░░░░░░░░░░ 0% |
+| Highway    | ░░░░░░░░░░ 0% |
+
+| Station | Fill |
+|---------|------|
+| S1         | 5/5 (100%) |
+| S2         | 1/4 (25%) |
+| S3         | 1/4 (25%) |
+| S4         | 1/4 (25%) |
+| S5         | 0/4 (0%) |
+| S6         | 0/4 (0%) |
+| S7         | 0/4 (0%) |
+| S8         | 0/4 (0%) |
+| S9         | 0/4 (0%) |
+| Pack_off   | 0/4 (0%) |
+| Box_Depot  | 8/8 (100%) |
+
+Pickers: 0 picks | walk μ0s σ0s | busy 0% | 0 carts served, 0 left early
+
+AGV util: 8/10 active | Blocked: 0 | Waiting carts: 0 | Completed orders: 0
+
+---
+## Run: 2026-08-11 14:52
+**Config**: 10 AGVs, 25 carts | Packoff 20.0s, Pick picker-gated (walk μ30s + grab 10s)
+**Elapsed**: 0h 33m | **Orders**: 14 | **Orders/hr**: 24.8 | **Avg cycle**: 19m 16s
+**Strategies**: baseline | Seed: 42
+**Constraint**: S7 (100%)
+
+| Resource | Pressure |
+|----------|----------|
+| S7         | ██████████ 100% |
+| AGVs       | █████████░ 90% |
+| Carts      | ████████░░ 84% |
+| Pack-off   | ██░░░░░░░░ 23% |
+| Highway    | ░░░░░░░░░░ 0% |
+
+| Station | Fill |
+|---------|------|
+| S1         | 2/5 (40%) |
+| S2         | 0/4 (0%) |
+| S3         | 3/4 (75%) |
+| S4         | 1/4 (25%) |
+| S5         | 2/4 (50%) |
+| S6         | 3/4 (75%) |
+| S7         | 4/4 (100%) |
+| S8         | 2/4 (50%) |
+| S9         | 4/4 (100%) |
+| Pack_off   | 3/4 (75%) |
+| Box_Depot  | 4/8 (50%) |
+
+Pickers: 523 picks | walk μ39s σ13s | busy 56% | 88 carts served, 0 left early
+
+AGV util: 9/10 active | Blocked: 0 | Waiting carts: 2 | Completed orders: 14
+
+---
+## Run: 2026-08-11 15:35
+**Config**: 16 AGVs, 25 carts | Packoff 20.0s, Pick picker-gated (walk μ30s + grab 10s)
+**Elapsed**: 15h 52m | **Orders**: 1396 | **Orders/hr**: 88.0 | **Avg cycle**: 16m 47s
+**Strategies**: baseline | Seed: 42
+**Constraint**: Carts (76%)
+
+| Resource | Pressure |
+|----------|----------|
+| Carts      | ███████░░░ 76% |
+| S2         | ███████░░░ 75% |
+| AGVs       | ██████░░░░ 62% |
+| Pack-off   | ░░░░░░░░░░ 6% |
+| Highway    | ░░░░░░░░░░ 0% |
+
+| Station | Fill |
+|---------|------|
+| S1         | 3/5 (60%) |
+| S2         | 3/4 (75%) |
+| S3         | 2/4 (50%) |
+| S4         | 3/4 (75%) |
+| S5         | 3/4 (75%) |
+| S6         | 2/4 (50%) |
+| S7         | 2/4 (50%) |
+| S8         | 2/4 (50%) |
+| S9         | 2/4 (50%) |
+| Pack_off   | 2/4 (50%) |
+| Box_Depot  | 2/8 (25%) |
+
+Pickers: 27717 picks | walk μ40s σ13s | busy 88% | 4070 carts served, 0 left early
+
+AGV util: 10/16 active | Blocked: 0 | Waiting carts: 3 | Completed orders: 1396
